@@ -1,0 +1,1076 @@
+
+
+
+<!--
+==============================================================================
+
+Copyright 2020-2024 by Jonathan Schmid-Burgk
+
+==============================================================================
+-->
+
+
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+<META HTTP-EQUIV="CACHE-CONTROL" CONTENT="NO-CACHE">
+    <html>
+        <head>
+            <title>NIS-Seq Analysis v1.0</title>
+        </head>
+        <body>
+            <b>NIS-Seq Analysis v1.0</b>
+            <br>JSB lab 2020-2024
+            <br>
+            <br>1. Enter experiment or well name:
+            <br><input id="experiment_name" value=""/>
+            <br>
+
+            <br>2. Enter number of cycles:
+            <br><input id="cycles" value="14"/>
+            <br>
+
+            <br>3. Load In-situ images (TIF, 4 channels, 2048x2048, 16bit, sorted):
+            <br><input type="file" id="ImageFiles" onchange="" multiple/> 
+            <br>
+            <a href="Fig1E_NIS_HeLa_tile40.zip">Download example data HeLa (1 tile)</a>
+            <br>
+
+            <br>4. Load nuclear masks (Generate with CellPose, TIF, 1 channel, 2048x2048, 16bit, sorted):
+            <br><input type="file" id="ImageFiles_masks" onchange="" multiple/>
+            <br>
+
+            <br>5. Load or calculate NIS-Seq cycle alignment:
+            <br>Load: <input type="file" id="AlignmentFile" onchange="LoadAlignmentFile();"/> (tab delimited, x (px) - y (px), no header) <button onclick="LoadAlignmentFile();">(re-load)</button>
+            <br>Or calculate: <button onclick="StartAutoAlign()">Calculate alignment (7 seconds per image)</button>
+            <br>
+
+            <br>6. Load or detect spots:
+            <br>Load: <input type="file" id="SpotFile" onchange="LoadSpotFile();"/> 
+            (tab delimited, tile - x (px) - y (px), no header)
+            <button onclick="LoadSpotFile();">(re-load)</button>
+            <br>Or calculate:
+            <br>Brightness threshold: <input id="spot_detection_thr" value="350" onchange="UpdateCanvas()"/>
+            <button onclick="StartSpotDetection()">Detect spots</button>
+            <br>
+
+            <br>7. Load compensation Matrix (no header):
+            <br><input type="file" id="MatrixFile" onchange="LoadCompensationMatrix();"/>
+            <button onclick="LoadCompensationMatrix();">(re-load)</button>
+            <br><a href="compensation_matrix_NextSeq2000_jsb-lab_2022.txt" target="_blank">compensation_matrix_NextSeq2000_jsb-lab_2022.txt</a> 
+            <br>
+
+            <br>8. Perform sequence calling:
+            <br>Optionally Limit analysis to tiles (either from or range first-last, counting from 0): <input id="limit_to_tile" />
+            <br><button onclick="StartBasecalling()">Start sequence calling</button>
+            <br>
+
+            <br>9. Filter spots to match reference library:
+            <br><input type="file" id="ReferenceFile" onchange="LoadReferenceFile();" />
+            (tab delimited, gene - sequence, no header)
+            <button onclick="LoadReferenceFile();">(re-load)</button>
+            <br><a href="NIS-Seq_Brunello_sgRNAs.zip">Download Brunello human sgRNA library and scrambled control</a>
+            <br><button onclick="FilterMatchingSpots();">Filter</button>
+            <br>
+
+            <br>10. Determine maximum NIS-Seq intensity per nucleus across cycles and channels:
+            <br><button onclick="StartMeasureNuclearIntensity()">Start measurement</button>
+            <br>
+
+            <br>11. Collapse sequences to nuclei
+            <br>Nucleus intensity threshold: 
+            <input id="nucleus_thr" value="700000"/> au
+            <br>Minimum relative intensity of top sequence: 
+            <input id="relative_thr" value="66.7"/> %
+            <br><button onclick="StartCropping();">Assign library-matching sequences to nuclei</button>
+
+
+            <div style="position:absolute; top:0; right:0">
+              <canvas id="maincanvas" width=2048 height=2048 style="width:800px; height:800px"></canvas>
+              <br>Inspect images:
+              <br><input type="range" id="cycle" min="0" max="13" value="0" onchange="UpdateCanvas()" /> Cycle
+              <br><input type="range" min="0" max="2000" value="0" id="tile" onchange="UpdateCanvas()" /> Tile
+              <br><input type="range" min="0" max="3" value="0" id="channel" onchange="UpdateCanvas()" /> Channel
+              <br><input type="range" min="0" max="4" step="0.001" id="brightness" onchange="UpdateCanvas()" /> Brightness
+              <br><input type="checkbox" id="filter" onchange="UpdateCanvas()" /> High-Pass Filter
+            </div>
+
+            <div id="status" style="position:absolute; bottom:0; left:0"></div>
+
+            <div id="save" style = "display:none">test</div>
+        </body>
+    </html>
+
+    <script type="text/javascript" src="fourier.js"></script>
+    <script type="text/javascript" src="pako.js"></script>
+    <script type="text/javascript" src="UTIF.js"></script>
+    <script>
+
+        var num_tiles = 1, cycles = 14;
+
+
+        function UpdateCanvas()
+        {
+          var cycle = document.getElementById("cycle").value*1;
+          var tile = document.getElementById("tile").value*1;
+          var channel = document.getElementById("channel").value*1;
+          var filter = document.getElementById("filter").checked;
+
+          LoadImage(cycle, tile, channel, filter, 0);
+        }
+
+        var current_image_data;
+        function LoadImage(cycle, tile, channel, filter, callback)
+        {
+          var cycles = document.getElementById("cycles").value*1;
+
+          var brightness = document.getElementById("brightness").value*1;
+          var files = document.getElementById("ImageFiles").files;
+
+          //var per_cycle = Math.floor(image_num/cycles);
+          var image_id = cycle*num_tiles*4 + tile*4 + channel;
+
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            //decode TIF:
+            var ifds = UTIF.decode(reader.result);
+            UTIF.decodeImage(reader.result, ifds[0]);
+            var data = new Uint16Array(ifds[0].data);
+            current_image_data = new Uint16Array(2048*2048);
+            for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
+
+            var canvas = document.getElementById("maincanvas");
+            //canvas.width = 1024;
+            //canvas.height = 1024;
+            var ImageContext = canvas.getContext("2d");
+            var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
+            var ImageArray = new Uint8Array(ImageData.data.buffer);
+
+            //spot filter:
+            var LP1 = new Float32Array(2048*2048), LP2 = new Float32Array(2048*2048);
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = current_image_data[x+y*2048];
+            if (filter)
+            {
+              for (var round=0; round<3; round++)
+              {
+                for (var x=0; x<2048-1; x++)    for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+1+y*2048])/2;
+                for (var x=2048-1; x>0; x--) for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x-1+y*2048])/2;
+                for (var y=0; y<2048-1; y++)    for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y+1)*2048])/2;
+                for (var y=2048-1; y>0; y--) for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y-1)*2048])/2;
+
+                if (round == 0) for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP2[x+y*2048] = LP1[x+y*2048];
+              }
+              for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+              {
+                if (LP2[x+y*2048] > LP1[x+y*2048]) current_image_data[x+y*2048] = LP2[x+y*2048] - LP1[x+y*2048];
+                else current_image_data[x+y*2048] = 0;
+              }
+            }
+
+            var max = 0;
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > max) max = current_image_data[x+y*2048];
+
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+            {
+                var index = x+2048*y;
+
+                var val = 0;
+                var xx = x+align_x[cycle+tile*cycles];
+                var yy = y+align_y[cycle+tile*cycles];
+                if (xx >= 0 && yy >= 0 && xx < 2048 && yy < 2048) val = current_image_data[xx+2048*yy]/max*255 *brightness;
+                if (val > 255) val = 255;
+
+                ImageArray[4*index+0] = val;
+                ImageArray[4*index+1] = val;
+                ImageArray[4*index+2] = val;
+                ImageArray[4*index+3] = 255;
+            }
+
+            ImageContext.putImageData(ImageData, 0, 0);
+
+            if (callback) callback();
+          };
+          reader.readAsArrayBuffer(files[image_id]);
+        }
+
+        function LoadMask(tile, callback)
+        {
+          var brightness = document.getElementById("brightness").value*1;
+
+          var files = document.getElementById("ImageFiles_masks").files;
+          var image_id = tile*1;
+
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            //decode TIF:
+            var ifds = UTIF.decode(reader.result);
+            UTIF.decodeImage(reader.result, ifds[0]);
+            var data = new Uint16Array(ifds[0].data);
+            current_image_data = new Uint16Array(2048*2048);
+            for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
+
+
+            var canvas = document.getElementById("maincanvas");
+            //canvas.width = 1024;
+            //canvas.height = 1024;
+            var ImageContext = canvas.getContext("2d");
+            var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
+            var ImageArray = new Uint8Array(ImageData.data.buffer);
+
+
+            var max = 0;
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+            {
+              var xx = x;
+              var yy = y;
+
+              if (xx>=0 && xx<2048 && yy>=0 && yy<2048)
+                if (current_image_data[x+y*2048] > max) max = current_image_data[xx+yy*2048];
+            }
+
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+            {
+                var index = x+2048*y;
+
+                var val = 0;
+
+                var xx = x;
+                var yy = y;
+
+                if (xx >= 0 && yy >= 0 && xx < 2048 && yy < 2048) val = current_image_data[xx+2048*yy]/max*255 *brightness;
+                if (val > 255) val = 255;
+
+                ImageArray[4*index+0] = val;
+                ImageArray[4*index+1] = val;
+                ImageArray[4*index+2] = val;
+                ImageArray[4*index+3] = 255;
+            }
+
+            ImageContext.putImageData(ImageData, 0, 0);
+
+            if (callback) callback();
+          };
+          reader.readAsArrayBuffer(files[image_id]);
+        }
+
+        var ref_image_data;
+        var align_x = new Int16Array(100000);
+        var align_y = new Int16Array(100000);
+        function saveforalign()
+        {
+          ref_image_data = current_image_data;
+        }
+
+        function fastalign(cycle, tile)
+        {
+            var res = 1024;
+            var scale = 1;
+            var off = res/2*scale;
+            //var res = 256;
+            //var scale = 4;
+
+            //mirror ref image, window
+            var inv_ref_image = new Float32Array(res*res);
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+              var win = (1-Math.cos(x/res*2*Math.PI)) * (1-Math.cos(y/res*2*Math.PI));
+              inv_ref_image[x+res*y] = ref_image_data[(1024+off-1-x*scale)+2048*(1024+off-1-y*scale)] * win; //removed +off-1
+            }
+            //mirror ref image, window
+            var scaled_image = new Float32Array(res*res);
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+              var win = (1-Math.cos(x/res*2*Math.PI)) * (1-Math.cos(y/res*2*Math.PI));
+              scaled_image[x+res*y] = current_image_data[(1024-off+x*scale)+2048*(1024-off+y*scale)] * win;
+            }
+
+            var ref_image_FFT = [];
+            Fourier.transform(inv_ref_image, ref_image_FFT);
+
+            var snap_image_FFT = [];
+            Fourier.transform(scaled_image, snap_image_FFT); //UNCLEAR IF INT ARRAY OK
+
+            //mask low frequencies:
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+              var d = ((x-res/2)**2) + ((y-res/2)**2);
+              if (d < 10000/4*res/512)
+              {
+                var xx = (x+res/2)%res;
+                var yy = (y+res/2)%res;
+                ref_image_FFT[xx + yy*res].real = 0;
+                ref_image_FFT[xx + yy*res].imag = 0;
+              }
+            }
+
+            //multiply:
+            var CorrelationSpectrum = [];
+            for (var i=0; i<ref_image_FFT.length; i++) CorrelationSpectrum[i] = ref_image_FFT[i].times(snap_image_FFT[i]);
+
+            var CorrelationData = [];
+            Fourier.invert(CorrelationSpectrum, CorrelationData);
+
+            //find max of correlation:
+            var max_correlation = 0, max_x = 0, max_y = 0;
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+              if (CorrelationData[x + y*res] > max_correlation)
+              {
+                max_correlation = CorrelationData[x + y*res];
+                max_x = x+1; //empirically tested: self-align
+                max_y = y+1; //empirically tested: self-align
+              }
+            if (max_x > res/2) max_x -= res;
+            if (max_y > res/2) max_y -= res;
+            //alert("Fine-alignment: "+max_x+" - "+max_y+" pixels");
+
+            var cycles = document.getElementById("cycles").value*1;
+            align_x[cycle+tile*cycles] = max_x*scale;
+            align_y[cycle+tile*cycles] = max_y*scale;
+        }
+
+
+        function LoadAlignmentFile()
+        {
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            align_x = new Int16Array(table.length);
+            align_y = new Int16Array(table.length);
+            for (var i=0; i<table.length; i++)
+            {
+              var line = table[i].split("\t");
+              align_x[i] = line[0]*1;
+              align_y[i] = line[1]*1;
+            }
+          };
+          reader.readAsText(document.getElementById("AlignmentFile").files[0]);
+        }
+        function SaveAlignmentFile()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+
+          var out = "";
+          for (var i=0; i<num_tiles*cycles; i++)
+          {
+            if (i>0) out += "\n";
+            out += align_x[i]+"\t"+align_y[i];
+          }
+
+          SaveFile(out, "Alignment.txt");
+        }
+
+
+        function SaveFile(data, filename)
+        {
+          var experiment_name = document.getElementById("experiment_name").value;
+          var bb = new Blob([data], {type: 'text/plain'});
+          var a = document.createElement('a');
+          a.download = experiment_name+"_"+filename;
+          a.href = window.URL.createObjectURL(bb);
+          a.textContent = 'Klick here to save';
+          a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
+          document.getElementById("save").appendChild(a);
+          a.click();
+        }
+
+        var current_alignment_cycle = 0, current_alignment_tile = 0;
+        function StartAutoAlign()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
+
+          current_alignment_cycle = 0;
+          current_alignment_tile = 0;
+
+          var cycles = document.getElementById("cycles").value*1;
+          align_x = new Int16Array(cycles*num_tiles);
+          align_y = new Int16Array(cycles*num_tiles);
+
+          var limit_to_tile = document.getElementById("limit_to_tile").value;
+          if (limit_to_tile != "")
+          {
+            if (limit_to_tile.indexOf("-") != -1) //range
+            {
+              current_alignment_tile = limit_to_tile.split("-")[0]*1;
+              num_tiles = limit_to_tile.split("-")[1]*1+1;
+            }
+            else //from
+            {
+              current_alignment_tile = limit_to_tile*1;
+            }
+          }
+
+          LoadImage(current_alignment_cycle, current_alignment_tile, 0, 0, AutoAlignCallback);
+        }
+        function AutoAlignCallback()
+        {
+          document.getElementById("status").innerHTML = "cycle-"+current_alignment_cycle+" tile-"+current_alignment_tile;
+
+          if (current_alignment_cycle==0) saveforalign();
+          else fastalign(current_alignment_cycle, current_alignment_tile);
+
+          current_alignment_cycle++;
+          var cycles = document.getElementById("cycles").value*1;
+          if (current_alignment_cycle >= cycles)
+          {
+            current_alignment_cycle=0;
+            current_alignment_tile++;
+          }
+          if (current_alignment_tile < num_tiles) LoadImage(current_alignment_cycle, current_alignment_tile, 0, 0, AutoAlignCallback);
+          else
+          {
+            SaveAlignmentFile();
+            alert("Alignment done");
+          }
+
+          if (current_alignment_cycle==0 && current_alignment_tile%100 == 0) SaveAlignmentFile();
+        }
+
+
+        //SPOT DETECTION:
+        var spot_tile = new Uint16Array(100000000), spot_x = new Uint16Array(100000000), spot_y = new Uint16Array(100000000), spot_num = 0;
+        var spot_matched = new Uint16Array(100000000);
+        var spot_seq = [], spot_max = new Float32Array(100000000);
+        var current_spot_channel = 1, current_spot_cycle = 0, current_spot_tile = 0;
+        var sum_image;
+        var spot_images = []; //needed still for seq calling
+        function StartSpotDetection()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
+
+          current_spot_channel = 1;
+          current_spot_cycle = 0;
+          current_spot_tile = 0;
+          sum_image = new Float32Array(2048*2048);
+
+          //for testing:
+          var limit_to_tile = document.getElementById("limit_to_tile").value;
+          if (limit_to_tile != "")
+          {
+            if (limit_to_tile.indexOf("-") != -1) //range
+            {
+              current_spot_tile = limit_to_tile.split("-")[0]*1;
+              num_tiles = limit_to_tile.split("-")[1]*1+1;
+            }
+            else //from
+            {
+              current_spot_tile = limit_to_tile*1;
+            }
+          }
+
+          LoadImage(current_spot_cycle, current_spot_tile, current_spot_channel, 1, SpotDetectionCallback);
+        }
+        function SpotDetectionCallback()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          document.getElementById("status").innerHTML = "channel-"+current_spot_channel+" tile-"+current_spot_tile;
+
+          //sum up images:
+          for (var x=0; x<2048; x++)
+            for (var y=0; y<2048; y++)
+            {
+              var xx = x+align_x[current_spot_cycle+current_spot_tile*cycles];
+              var yy = y+align_y[current_spot_cycle+current_spot_tile*cycles];
+              if (xx>=0 && xx<2048 && yy>=0 && yy<2048)
+                sum_image[x+2048*y] += current_image_data[xx+2048*yy];
+            }
+
+          current_spot_channel++;
+          if (current_spot_channel > 3)
+          {
+            current_spot_channel = 1;
+            current_spot_cycle++;
+          }
+          if (current_spot_cycle > 2)
+          {
+            SpotDetection();
+            current_spot_channel = 1;
+            current_spot_cycle = 0;
+            current_spot_tile++;
+            sum_image = new Float32Array(2048*2048); //zero for next tile
+          }
+          if (current_spot_tile < num_tiles) LoadImage(current_spot_cycle, current_spot_tile, current_spot_channel, 1, SpotDetectionCallback);
+          else
+          {
+            SaveSpotFile();
+            alert("Spot detection done");
+          }
+
+          if (current_spot_channel==1 && current_spot_tile%100 == 0) SaveSpotFile()
+        }
+        function SpotDetection()
+        {
+          var thr = document.getElementById("spot_detection_thr").value*1;
+
+          for (var x=1; x<2048-1; x++) for (var y=1; y<2048-1; y++)
+          {
+            if (sum_image[x+y*2048] > sum_image[(x-1)+y*2048] &&
+                sum_image[x+y*2048] > sum_image[(x+1)+y*2048] &&
+                sum_image[x+y*2048] > sum_image[x+(y-1)*2048] &&
+                sum_image[x+y*2048] > sum_image[x+(y+1)*2048] &&
+                sum_image[x+y*2048] > sum_image[(x-1)+(y-1)*2048] &&
+                sum_image[x+y*2048] > sum_image[(x-1)+(y+1)*2048] &&
+                sum_image[x+y*2048] > sum_image[(x+1)+(y-1)*2048] &&
+                sum_image[x+y*2048] > sum_image[(x+1)+(y+1)*2048] &&
+                sum_image[x+y*2048] > thr)
+            {
+              //maximum detected
+              spot_tile[spot_num] = current_spot_tile;
+              spot_x[spot_num] = x;
+              spot_y[spot_num] = y;
+              spot_num++;
+            }
+          }
+        }
+        function LoadSpotFile()
+        {
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            for (var i=0; i<table.length; i++)
+            {
+              var line = table[i].split("\t");
+              spot_tile[i] = line[0]*1;
+              spot_x[i] = line[1]*1;
+              spot_y[i] = line[2]*1;
+              if (line.length >= 4) spot_seq[i] = line[3];
+              if (line.length >= 5) spot_max[i] = line[4];
+              spot_num = i+1;
+            }
+          };
+          reader.readAsText(document.getElementById("SpotFile").files[0]);
+        }
+        function SaveSpotFile()
+        {
+          var out = "";
+          for (var i=0; i<spot_num; i++)
+          {
+            if (i>0) out += "\n";
+            out += spot_tile[i]+"\t"+spot_x[i]+"\t"+spot_y[i];
+          }
+
+          SaveFile(out, "Spots.txt");
+        }
+
+
+        //basecalling
+        var current_basecalling_channel = 1, current_basecalling_tile = 0, current_basecalling_cycle = 0;
+        var basecalling_kernel1 = new Float32Array(9*9), basecalling_kernel2 = new Float32Array(9*9), basecalling_kernel3 = new Float32Array(9*9);
+        var spot_signal;
+        function PrepBasecalling()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+
+          //calculate kernel:
+          basecalling_kernel1[9*4+4] = 1;
+          for (var round=0; round<3; round++)
+          {
+            for (var x=0; x<9-1; x++) for (var y=0; y<9; y++) basecalling_kernel1[x+y*9] = (basecalling_kernel1[x+y*9]+basecalling_kernel1[x+1+y*9])/2;
+            for (var x=9-1; x>0; x--) for (var y=0; y<9; y++) basecalling_kernel1[x+y*9] = (basecalling_kernel1[x+y*9]+basecalling_kernel1[x-1+y*9])/2;
+            for (var y=0; y<9-1; y++) for (var x=0; x<9; x++) basecalling_kernel1[x+y*9] = (basecalling_kernel1[x+y*9]+basecalling_kernel1[x+(y+1)*9])/2;
+            for (var y=9-1; y>0; y--) for (var x=0; x<9; x++) basecalling_kernel1[x+y*9] = (basecalling_kernel1[x+y*9]+basecalling_kernel1[x+(y-1)*9])/2;
+            if (round == 0) for (var x=0; x<9; x++) for (var y=0; y<9; y++) basecalling_kernel2[x+y*9] = basecalling_kernel1[x+y*9];
+          }
+          for (var x=0; x<9; x++) for (var y=0; y<9; y++) //for (var xx=0; xx<5; xx++) for (var yy=0; yy<5; yy++)
+          {
+            basecalling_kernel3[x+y*9] = basecalling_kernel2[x+y*9] - basecalling_kernel1[x+y*9];
+          }
+          //basecalling_kernel3[3+3*7] = 1;
+
+          /*var out="";
+          for (var y=0; y<9; y++)
+          {
+              for (var x=0; x<9; x++) out += basecalling_kernel3[x+y*9]+"\t";
+              out += "\n";
+          }
+          SaveFile(out,"kernel.txt");*/
+
+          //reserve mem:
+          spot_signal = new Float32Array(spot_num*cycles*3);
+        }
+        function StartBasecalling()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
+
+          PrepBasecalling();
+          current_basecalling_cycle = 0;
+          current_basecalling_tile = 0;
+          current_basecalling_channel = 1;
+
+          var limit_to_tile = document.getElementById("limit_to_tile").value;
+          if (limit_to_tile != "")
+          {
+            if (limit_to_tile.indexOf("-") != -1) //range
+            {
+              current_basecalling_tile = limit_to_tile.split("-")[0]*1;
+              num_tiles = limit_to_tile.split("-")[1]*1+1;
+            }
+            else //from
+            {
+              current_basecalling_tile = limit_to_tile*1;
+            }
+          }
+
+          LoadImage(current_basecalling_cycle, current_basecalling_tile, current_basecalling_channel, 0, BasecallingCallback);
+        }
+        function BasecallingCallback()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          document.getElementById("status").innerHTML = "channel-"+current_basecalling_channel+" tile-"+current_basecalling_tile+" cycle-"+current_basecalling_cycle;
+
+          spot_images[current_basecalling_channel-1] = current_image_data;
+          if (current_basecalling_channel==3) Basecalling();
+
+          current_basecalling_channel++;
+          if (current_basecalling_channel > 3)
+          {
+            current_basecalling_channel=1;
+            current_basecalling_cycle++;
+          }
+          if (current_basecalling_cycle > cycles-1)
+          {
+            current_basecalling_cycle=0;
+            current_basecalling_tile++;
+          }
+          if (current_basecalling_tile < num_tiles) LoadImage(current_basecalling_cycle, current_basecalling_tile, current_basecalling_channel, 0, BasecallingCallback);
+          else
+          {
+            SaveSequences();
+          }
+        }
+        function Basecalling()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          //var out = "G\tT\tA\tC\t\n";
+
+          for (var i=0; i<spot_num; i++) if (spot_tile[i] == current_basecalling_tile)
+          {
+            for (var ch=0; ch<3; ch++)
+            {
+              var val = 0;
+              for (var x=0; x<5; x++) for (var y=0; y<5; y++) //scan max
+              {
+                var val2 = 0;
+                for (var xx=0; xx<7; xx++) for (var yy=0; yy<7; yy++) //convo kernel
+                {
+                  var xxx = spot_x[i]-5+x+xx + align_x[current_basecalling_cycle+current_basecalling_tile*cycles];
+                  var yyy = spot_y[i]-5+y+yy + align_y[current_basecalling_cycle+current_basecalling_tile*cycles];
+                  if (xxx>=0 && xxx<2048 && yyy>=0 && yyy<2048) val2 += basecalling_kernel3[(xx+1)+(yy+1)*9] * spot_images[ch][xxx+yyy*2048]; //sum
+                  //if (xx>=0 && xx<2048 && yy>=0 && yy<2048) if (spot_images[ch][xx+yy*2048]>val) val = spot_images[ch][xx+yy*2048]; //max, vorsicht: per-cycle
+                }
+                if (val2>0) val += val2;
+              }
+
+              spot_signal[i*cycles*3 + current_basecalling_cycle*3 + ch] = val;
+            }
+          }
+        }
+        function SaveSequences()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+
+          var out="tile\tx\ty\tsequence\tintensity\n";
+          var out_file_num = 0;
+
+          var total=0, matched=0;
+          for (var s=0; s<spot_num; s++) ///if (spot_tile[s]==24)
+          {
+            //multiply with matrix to get base signals:
+            var basesignal = new Float32Array(cycles*3);
+            for (var cy=0; cy<cycles; cy++)
+              for (var ch=0; ch<3; ch++)
+                for (var ch2=0; ch2<3; ch2++) basesignal[cy*3+ch] += compensation_matrix[ch2*3+ch] * spot_signal[s*cycles*3 + cy*3 + ch2];
+
+            //find max signal of spot:
+            var spotmax = 0;
+            for (var cy=0; cy<cycles; cy++)
+              for (var ch=0; ch<3; ch++)
+                if (basesignal[cy*3+ch] > spotmax) spotmax = basesignal[cy*3+ch];
+
+            //determine sequence:
+            var seq = "";
+            var GTAC = "CAT";
+            for (var cy=0; cy<cycles; cy++)
+            {
+              var maxbase = "G", max = spotmax*0.2;
+              for (var ch=0; ch<3; ch++)
+              {
+                if (basesignal[cy*3+ch] > max)
+                {
+                  max = basesignal[cy*3+ch];
+                  maxbase = GTAC[ch];
+                }
+              }
+              seq += maxbase;
+            }
+
+            //save to array:
+            spot_seq[s] = seq;
+            spot_max[s] = spotmax;
+
+            out += spot_tile[s]+"\t"+spot_x[s]+"\t"+spot_y[s]+"\t"+seq+"\t"+spotmax+"\n";
+            if (out.length > 100000000)
+            {
+              SaveFile(out, "Sequences_"+(out_file_num+1)+".txt");
+              out_file_num++;
+              out = "";
+            }
+
+            //match to dict:
+            total++;
+            var found = 0;
+            //seq = ReverseComplement(seq);
+            /*for (var i=0; i<barcode_dictionary.length; i++)
+            {
+              var base_match=0;
+              for (var ii=0; ii<10; ii++) if (barcode_dictionary[i][ii] == seq[ii]) base_match++;
+
+              if (base_match >= 10) found=1; //currently limited to 10 bases perfect match
+            }*/
+            //if (barcode_dictionary.indexOf(seq) != -1)
+            if (found)
+            {
+              matched++;
+              spot_matched[s] = 1;
+            }
+          }
+          SaveFile(out, "Sequences_"+(out_file_num+1)+".txt");
+        }
+
+
+        var compensation_matrix = new Float32Array(3*3);
+        function LoadCompensationMatrix()
+        {
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            for (var i=0; i<table.length; i++)
+            {
+              var line = table[i].split("\t");
+              compensation_matrix[i*3+0] = line[0]*1;
+              compensation_matrix[i*3+1] = line[1]*1;
+              compensation_matrix[i*3+2] = line[2]*1;
+              //compensation_matrix[i*3+3] = line[3]*1;
+            }
+          };
+          reader.readAsText(document.getElementById("MatrixFile").files[0]);
+        }
+
+        var reference_library;
+        var reference_library_loaded = false;
+        var reference_library_lookup;
+        function LoadReferenceFile()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            reference_library = [];
+            reference_library_lookup = [];
+            for (var i=0; i<table.length; i++)
+            {
+              var line = table[i].split("\t");
+              var seq = line[1];
+              reference_library.push(seq);
+
+              var seed = ReverseComplement(seq).substr(0,cycles);
+              if (reference_library_lookup[seed] === undefined) reference_library_lookup[seed] = seq;
+              else reference_library_lookup[seed] = "ambiguous";
+            }
+            reference_library_loaded = true;
+          };
+          reader.readAsText(document.getElementById("ReferenceFile").files[0]);
+        }
+        function FilterMatchingSpots()
+        {
+          if (!reference_library_loaded)
+          {
+            alert("No reference library loaded.");
+            return;
+          }
+          var spot_num_old = spot_num;
+          spot_num = 0;
+          for (var i=0; i<spot_num_old; i++)
+          {
+            if (reference_library_lookup[spot_seq[i]] && reference_library_lookup[spot_seq[i]] != "ambiguous")
+            {
+              spot_tile[spot_num] = spot_tile[i];
+              spot_x[spot_num] = spot_x[i];
+              spot_y[spot_num] = spot_y[i];
+              spot_seq[spot_num] = reference_library_lookup[spot_seq[i]];
+              spot_max[spot_num] = spot_max[i];
+              spot_num++;
+            }
+          }
+          alert(spot_num+" of "+spot_num_old+" spots were filtered to match reference library");
+        }
+
+        function ReverseComplement(A)
+        {
+            var dummy = "";
+            for (var i=0; i<A.length; i++)
+            {
+                if (A[A.length-1-i] == 'G') dummy += 'C';
+                if (A[A.length-1-i] == 'A') dummy += 'T';
+                if (A[A.length-1-i] == 'T') dummy += 'A';
+                if (A[A.length-1-i] == 'C') dummy += 'G';
+                if (A[A.length-1-i] == 'N') dummy += 'N';
+            }
+            return dummy;
+        }
+
+
+
+
+        //ASSIGN SPOTS TO NUCLEI:
+
+        var current_cropping_cycle = 0, current_cropping_tile = 0;
+        var total_aligned_cells, total_assigned_cells, ambig_cells;
+        function StartCropping()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
+
+          //out = "tile\tcell\tx\ty\tsequence\ttotal_spots\tseq_spots\tsecond_seq_spots\n";
+          out = "tile\tnucleus\tx\ty\tsequence\tmax_intensity\n";
+          current_cropping_cycle = 0; //only load mask
+          current_cropping_tile = 0;
+          total_aligned_cells = 0;
+          total_assigned_cells = 0;
+          ambig_cells = 0;
+          LoadMask(current_cropping_tile, CroppingCallback);
+        }
+        function CroppingCallback()
+        {
+          document.getElementById("status").innerHTML = " tile-"+current_cropping_tile;
+
+          CropCells(current_cropping_tile);
+
+          current_cropping_tile++;
+          if (current_cropping_tile < num_tiles) 
+          {
+            LoadMask(current_cropping_tile, CroppingCallback);
+          }
+          else
+          {
+            SaveCroppingFile();
+            alert(total_assigned_cells+" of "+total_aligned_cells+" cells assigned a barcode. Ambiguous: "+ambig_cells);
+          }
+        }
+        var out = "";
+        function CropCells(tile)
+        {
+          var tile_is = tile;
+
+          var nucleus_thr = document.getElementById("nucleus_thr").value*1;
+          var relative_thr = document.getElementById("relative_thr").value*1;
+
+          //collect sequences present in this tile, create lookup table:
+          var seq_lookup_index = []; //go from seq to seq_id (number)
+          var seq_lookup_index_reverse = []; //go from seq_id to seq
+          var seq_lookup_num = 0; //number of unique sequences in this tile
+          for (var i=0; i<spot_num; i++)
+            if (spot_tile[i] == tile_is /*&& spot_max[i] > spot_thr*/)
+            {
+              var x = spot_x[i];
+              var y = spot_y[i];
+              if (seq_lookup_index[spot_seq[i]] === undefined)
+              {
+                  seq_lookup_index[spot_seq[i]] = seq_lookup_num;
+                  seq_lookup_index_reverse[seq_lookup_num] = spot_seq[i];
+                  seq_lookup_num++;
+              }
+            }
+          //console.log(seq_lookup_index)
+
+          //assign spots to tile-dictionary and to cell:
+          var cell_seq_id = new Uint16Array(10000*100); //up to 10k cells, 100 unique sequences per cell
+          var cell_seq_id_count = new Float32Array(10000*100); //counter for each sequence ///sum up intensity
+          var cell_seq_num = new Uint16Array(10000); //number of unique sequences found for one cell
+
+          for (var i=0; i<spot_num; i++)
+            if (spot_tile[i] == tile_is /*&& spot_max[i] > spot_thr*/)
+          {
+            var seq_id = seq_lookup_index[spot_seq[i]];
+            var x = spot_x[i];
+            var y = spot_y[i];
+            var cell = current_image_data[x+2048*y];
+
+            if (cell < 10000) //limit to 10k cells per tile
+            {
+              //check if seq already in array:
+              var id_found = 0;
+              for (var ii=0; ii<cell_seq_num[cell]; ii++) //go through list of seqs for that cell
+                if (cell_seq_id[cell*100+ii] == seq_id)
+                {
+                  cell_seq_id_count[cell*100+ii] += spot_max[i]; ///
+                  id_found = 1;
+                  break;
+                }
+
+              //otherwise, add to list of seqs for that cell:
+              if (id_found == 0)
+              {
+                var ii = cell_seq_num[cell];
+                cell_seq_id[cell*100+ii] = seq_id;
+                cell_seq_id_count[cell*100+ii] = spot_max[i]; ///
+                cell_seq_num[cell]++;
+              }
+            }
+          }
+
+          //find center of each cell:
+          var cell_sum_x = new Float64Array(10000);
+          var cell_sum_y = new Float64Array(10000);
+          var cell_sum_n = new Float64Array(10000);
+          for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+          {
+            var cell = current_image_data[x+2048*y];
+            if (cell > 0)
+            {
+              cell_sum_x[cell]+=x;
+              cell_sum_y[cell]+=y;
+              cell_sum_n[cell]++;
+            }
+          }
+
+          //go through cells, filter for agreeing spots:
+          for (var cell=1; cell<10000; cell++) if (cell_sum_n[cell] > 0)
+          {
+            if (cell_seq_num[cell] > 0)
+            {
+              //find max:
+              var max = 0, sum = 0, maxseq = -1;
+              for (var ii=0; ii<cell_seq_num[cell]; ii++)
+              {
+                sum += cell_seq_id_count[cell*100+ii];
+                if (cell_seq_id_count[cell*100+ii] > max)
+                {
+                  max = cell_seq_id_count[cell*100+ii];
+                  maxseq = cell_seq_id[cell*100+ii];
+                }
+              }
+
+              //find second max:
+              var secondmax = 0, secondmaxseq = -1;
+              for (var ii=0; ii<cell_seq_num[cell]; ii++) if (cell_seq_id[cell*100+ii] != maxseq)
+              {
+                if (cell_seq_id_count[cell*100+ii] > secondmax)
+                {
+                  secondmax = cell_seq_id_count[cell*100+ii];
+                  secondmaxseq = cell_seq_id[cell*100+ii];
+                }
+              }
+
+              if (max >= sum*relative_thr/100)
+                if (nuclear_max_intensity[tile][cell] > nucleus_thr)
+              {
+                var cell_center_x = Math.floor(cell_sum_x[cell]/cell_sum_n[cell]);
+                var cell_center_y = Math.floor(cell_sum_y[cell]/cell_sum_n[cell]);
+
+                var perfect_seq = seq_lookup_index_reverse[maxseq];
+
+                out += tile+"\t"+cell+"\t"+cell_center_x+"\t"+cell_center_y+"\t"+perfect_seq+"\t"+nuclear_max_intensity[tile][cell]+"\n"; //sum+"\t"+max+"\t"+secondmax+"\n";
+                total_assigned_cells++;
+              }
+              else ambig_cells++;
+            }
+            total_aligned_cells++; /// 
+          }       
+        }
+        function SaveCroppingFile()
+        {
+          SaveFile(out, "NuclearSequences.txt");
+        }
+
+
+        //MEASURE NUCLEAR INTENSITY:
+
+        var nuclear_mask_image, nuclear_max_intensity;
+        function StartMeasureNuclearIntensity()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
+
+          current_basecalling_cycle = -1;
+          current_basecalling_tile = 0;
+          current_basecalling_channel = 1;
+
+          out = "tile\tnucleus\tintensity";
+          nuclear_max_intensity = [];
+
+          LoadMask(current_basecalling_tile, MeasureNuclearIntensityCallback);
+        }
+        function MeasureNuclearIntensityCallback()
+        {
+          var cycles = document.getElementById("cycles").value*1;
+          document.getElementById("status").innerHTML = "channel-"+current_basecalling_channel+" tile-"+current_basecalling_tile+" cycle-"+current_basecalling_cycle;
+
+          if (current_basecalling_cycle == -1)
+          {
+            nuclear_mask_image = current_image_data;
+
+            //detect the number of nuclei:
+            nuclear_num = 0;
+            for (var x=0; x<2048; x++)
+              for (var y=0; y<2048; y++)
+                if (nuclear_mask_image[x+2048*y]+1 > nuclear_num)
+                  nuclear_num = nuclear_mask_image[x+2048*y]+1;
+
+            //create array of max intensities for each nucleus:
+            nuclear_max_intensity[current_basecalling_tile] = new Uint32Array(nuclear_num);
+          }
+          else
+          {
+            //go through all (aligned) pixels, sum up intensities per nucleus:
+            nuclear_intensity = new Uint32Array(nuclear_num);
+            for (var x=0; x<2048; x++)
+              for (var y=0; y<2048; y++)
+              {
+                var xx = x - align_x[current_basecalling_cycle+current_basecalling_tile*cycles];
+                var yy = y - align_y[current_basecalling_cycle+current_basecalling_tile*cycles];
+
+                var nuc = 0;
+                if (xx>=0 && xx<2048 && yy>=0 && yy<2048) nuc = nuclear_mask_image[xx+2048*yy];
+                if (nuc > 0) nuclear_intensity[nuc] +=  current_image_data[x+2048*y];
+              }
+
+            //record the highest intensity per nucleus:
+            for (var nuc=0; nuc<nuclear_num; nuc++)
+              if (nuclear_intensity[nuc] > nuclear_max_intensity[current_basecalling_tile][nuc])
+                nuclear_max_intensity[current_basecalling_tile][nuc] = nuclear_intensity[nuc];
+          }
+
+          current_basecalling_channel++;
+          if (current_basecalling_cycle == -1 || current_basecalling_channel > 3)
+          {
+            current_basecalling_cycle++;
+            current_basecalling_channel=1;
+          }
+          if (current_basecalling_cycle == cycles) //last cycle
+          {
+            //SaveSequences();
+            for (var nuc=1; nuc<nuclear_num; nuc++) out += "\n"+current_basecalling_tile+"\t"+nuc+"\t"+nuclear_max_intensity[current_basecalling_tile][nuc];
+
+            current_basecalling_cycle=-1;
+            current_basecalling_tile++;
+          }
+          if (current_basecalling_tile < num_tiles)
+          {
+            if (current_basecalling_cycle > -1) LoadImage(current_basecalling_cycle, current_basecalling_tile, current_basecalling_channel, 0, MeasureNuclearIntensityCallback);
+            else LoadMask(current_basecalling_tile, MeasureNuclearIntensityCallback);
+          }
+          else
+          {
+            SaveFile(out, "nuclear_intensities.txt");
+          }
+        }
+
+
+    </script>
