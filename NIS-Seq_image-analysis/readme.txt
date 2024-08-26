@@ -1,2 +1,4 @@
-Please copy to the folder these third-pary libraries:
-- fourier.js- pako.js- UTIF.js
+Please copy to the folder these third-party libraries:
+- fourier.js
+- pako.js
+- UTIF.js
