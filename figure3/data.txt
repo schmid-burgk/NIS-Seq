@@ -1,0 +1,3 @@
+Screening data can be downloaded through Zenodo:
+
+https://doi.org/10.5281/zenodo.13375079
