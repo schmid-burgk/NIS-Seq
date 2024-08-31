@@ -1,0 +1,398 @@
+
+
+
+<!--
+==============================================================================
+
+Copyright 2020-2024 by Jonathan Schmid-Burgk
+
+==============================================================================
+-->
+
+
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+<META HTTP-EQUIV="CACHE-CONTROL" CONTENT="NO-CACHE">
+    <html>
+        <head>
+            <title>ImageFiend 1.0</title>
+        </head>
+        <body style="margin: 0; font-family: Helvetica; font-weight: 100; background-size: 200vw 200vh" background="brown1.jpg">
+          <div style="background-color: rgba(255,255,255,0.2); margin: 0.5%; padding: 1%; width: 47.25%; height: 100%">
+            <b>NIS-Seq Analysis Suite v1.0 - Image Mapping (same objective)</b>
+            <br>JSB lab 2020-2024
+            <br>
+
+            <br>In-situ images (TIFF, 2048x2048, 16 bit, sorted by tile > channel, only load one cycle):
+            <br><input id="channels1" value="4" /> channels
+            <br><input type="file" id="ImageFiles1" onchange="num_tiles1=this.files.length/document.getElementById('channels1').value;" multiple/>
+
+            <br>
+            <br>Phenotype images (TIFF, 2048x2048, 16 bit, sorted by tile > channel):
+            <br><input id="channels2" value="3" /> channels
+            <br><input type="file" id="ImageFiles2" onchange="num_tiles2=this.files.length/document.getElementById('channels2').value;" multiple/>
+
+            <br>
+            <br>
+            <button onclick="StartAutoAlign()">Start alignment</button>
+          </div>
+
+          <div style="position:absolute; top:0; right:0; background-color: rgba(255,255,255,0.2); margin: 0.5%; padding: 1%; width: 47.25%; height: 100%">
+            <b>Inspect raw images:</b>
+            <br><br>
+            <canvas id="maincanvas" width=2048 height=2048 style="width: 40vw; height: 40vw"></canvas>
+
+            <br>
+            <br><input type="range" id="cycle" min="0" max="1" value="0" onchange="UpdateCanvas()" /> In-situ / phenotype
+            <br><input type="range" min="0" max="2000" id="tile" value="0" onchange="UpdateCanvas()" /> Tile
+            <br><input type="range" min="0" max="3" id="channel" value="0" onchange="UpdateCanvas()" /> Channel
+            <br><input type="range" min="0" max="20" step="0.001" id="brightness" onchange="UpdateCanvas()" /> Brightness
+            <br>
+          </div>
+            
+          <div id="status" style="position:absolute; bottom:0; left:0"></div>
+
+          <div id="save" style = "display:none">test</div>
+        </body>
+    </html>
+
+    <script type="text/javascript" src="fourier.js"></script>
+    <script type="text/javascript" src="pako.js"></script>
+    <script type="text/javascript" src="UTIF.js"></script>
+    <script>
+
+        var align_x, align_y, align_tile, align_q;
+
+        var num_tiles1 = 0;
+        var num_tiles2 = 0;
+
+
+
+        function UpdateCanvas()
+        {
+          var cycle = document.getElementById("cycle").value*1;
+          var tile = document.getElementById("tile").value*1;
+          var channel = document.getElementById("channel").value*1;
+
+          LoadImage(cycle, tile, channel, 0, 0);
+        }
+
+        var current_image_data;
+        function LoadImage(cycle, tile, channel, filter, callback)
+        {
+          var brightness = document.getElementById("brightness").value*1;
+
+
+          var files = document.getElementById("ImageFiles1").files;
+          var channels = document.getElementById("channels1").value*1;
+          var image_id = tile*channels + channel;
+
+          if (cycle==1) //phenotype
+          {
+              files = document.getElementById("ImageFiles2").files;
+              channels = document.getElementById("channels2").value*1;
+              image_id = tile*channels + channel;
+          }
+
+
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            //decode TIF:
+            var ifds = UTIF.decode(reader.result);
+            UTIF.decodeImage(reader.result, ifds[0]);
+            var data = new Uint16Array(ifds[0].data);
+            current_image_data = new Uint16Array(2048*2048);
+            for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
+
+            var canvas = document.getElementById("maincanvas");
+            //canvas.width = 1024;
+            //canvas.height = 1024;
+            var ImageContext = canvas.getContext("2d");
+            var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
+            var ImageArray = new Uint8Array(ImageData.data.buffer);
+
+            //spot filter:
+            var LP1 = new Float32Array(2048*2048), LP2 = new Float32Array(2048*2048);
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = current_image_data[x+y*2048];
+            if (filter)
+            {
+              for (var round=0; round<3; round++)
+              {
+                for (var x=0; x<2048-1; x++)    for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+1+y*2048])/2;
+                for (var x=2048-1; x>0; x--) for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x-1+y*2048])/2;
+                for (var y=0; y<2048-1; y++)    for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y+1)*2048])/2;
+                for (var y=2048-1; y>0; y--) for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y-1)*2048])/2;
+
+                if (round == 0) for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP2[x+y*2048] = LP1[x+y*2048];
+              }
+              for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+              {
+                if (LP2[x+y*2048] > LP1[x+y*2048]) current_image_data[x+y*2048] = LP2[x+y*2048] - LP1[x+y*2048];
+                else current_image_data[x+y*2048] = 0;
+              }
+            }
+
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > 1000) current_image_data[x+y*2048] = 1000; //cap nuclei
+
+            var max = 0;
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > max) max = current_image_data[x+y*2048];
+
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+            {
+                var index = x+2048*y;
+
+                var val = 0;
+                var scale=1; if (cycle==0) scale=3;
+                //var xx = Math.floor(((x +shiftx)-1024)/scale +1024);// +align_x[cycle+tile*cycles];
+                //var yy = Math.floor(((y +shifty)-1024)/scale +1024);// +align_y[cycle+tile*cycles];
+                var xx = x;
+                var yy = y;
+                /*if (cycle==0)
+                {
+                  xx = Math.floor( ((xx-1024)/3)+1024 );
+                  yy = Math.floor( ((yy-1024)/3)+1024 );
+                  xx += shiftx;
+                  yy += shifty;
+                }*/
+                if (xx >= 0 && yy >= 0 && xx < 2048 && yy < 2048) val = current_image_data[xx+2048*yy]/max*255 *brightness;
+                if (val > 255) val = 255;
+
+                ImageArray[4*index+0] = val;
+                ImageArray[4*index+1] = val;
+                ImageArray[4*index+2] = val;
+                ImageArray[4*index+3] = 255;
+            }
+
+            ImageContext.putImageData(ImageData, 0, 0);
+
+            if (callback) callback();
+          };
+          reader.readAsArrayBuffer(files[image_id]);
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+        var ref_image_data;
+        var align_x, align_y;
+        function saveforalign()
+        {
+          ref_image_data = current_image_data;
+
+          //scale down 3x
+          /*var scaled = new Float32Array(2048*2048);
+          for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+          {
+            var xx = Math.floor((x-1024)/3+1024);
+            var yy = Math.floor((y-1024)/3+1024);
+
+            scaled[xx+yy*2048] += current_image_data[x+y*2048];
+          }
+
+          ref_image_data = scaled;*/
+        }
+        var last_align_x, last_align_y, last_align_q;
+        function fastalign(cycle, tile)
+        {
+            var res = 1024;
+            var scale = 2;
+            var off = res/2*scale;
+            //var res = 256;
+            //var scale = 4;
+
+            //mirror ref image, window
+            var inv_ref_image = new Float32Array(res*res);
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+              var win = 1;//(1-Math.cos(x/res*2*Math.PI)) * (1-Math.cos(y/res*2*Math.PI));
+              if (ref_image_data[(1024+off-1-x*scale)+2048*(1024+off-1-y*scale)]) inv_ref_image[x+res*y] = ref_image_data[(1024+off-1-x*scale)+2048*(1024+off-1-y*scale)] * win;
+              //the if is needed because some images lack the last 8 pixels
+            }
+            //mirror ref image, window
+            var scaled_image = new Float32Array(res*res);
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+              var win = 1;//(1-Math.cos(x/res*2*Math.PI)) * (1-Math.cos(y/res*2*Math.PI));
+              if (current_image_data[(1024-off+x*scale)+2048*(1024-off+y*scale)]) scaled_image[x+res*y] = current_image_data[(1024-off+x*scale)+2048*(1024-off+y*scale)] * win;
+              //the if is needed because some images lack the last 8 pixels
+            }
+
+            var ref_image_FFT = [];
+            Fourier.transform(inv_ref_image, ref_image_FFT);
+
+            var snap_image_FFT = [];
+            Fourier.transform(scaled_image, snap_image_FFT); //UNCLEAR IF INT ARRAY OK
+
+            //mask low frequencies:
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+              var d = ((x-res/2)**2) + ((y-res/2)**2);
+              if (d < 1000)
+              {
+                var xx = (x+res/2)%res;
+                var yy = (y+res/2)%res;
+                ref_image_FFT[xx + yy*res].real = 0;
+                ref_image_FFT[xx + yy*res].imag = 0;
+              }
+            }
+
+            //multiply:
+            var CorrelationSpectrum = [];
+            for (var i=0; i<ref_image_FFT.length; i++) CorrelationSpectrum[i] = ref_image_FFT[i].times(snap_image_FFT[i]);
+
+            var CorrelationData = [];
+            Fourier.invert(CorrelationSpectrum, CorrelationData);
+
+            //find max of correlation:
+            var max_correlation = 0, max_x = 0, max_y = 0;
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+              if (CorrelationData[x + y*res] > max_correlation)
+              {
+                max_correlation = CorrelationData[x + y*res];
+                max_x = x+1; //empirically tested: self-align
+                max_y = y+1; //empirically tested: self-align
+              }
+            if (max_x > res/2) max_x -= res;
+            if (max_y > res/2) max_y -= res;
+            //alert("Fine-alignment: "+max_x+" - "+max_y+" pixels "+max_correlation);
+
+            //output correlation plot:
+            var canvas = document.getElementById("maincanvas");
+            var ImageContext = canvas.getContext("2d");
+            var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
+            var ImageArray = new Uint8Array(ImageData.data.buffer);
+            for (var x=0; x<res; x++) for (var y=0; y<res; y++)
+            {
+                var index = x+2048*y;
+                var val = CorrelationData[x + y*res]/max_correlation*255;
+                if (val < 0) val=0;
+                ImageArray[4*index+0] = val;
+                ImageArray[4*index+1] = val;
+                ImageArray[4*index+2] = val;
+                ImageArray[4*index+3] = 255;
+            }
+            ImageContext.putImageData(ImageData, 0, 0);
+
+
+            last_align_x = max_x*scale;
+            last_align_y = max_y*scale;
+            last_align_q = 0;
+        }
+        var current_alignment_cycle = 0, current_alignment_tile = 0;
+        function StartAutoAlign()
+        {
+          align_tile = new Int16Array(num_tiles2);
+          align_x = new Int16Array(num_tiles2);
+          align_y = new Int16Array(num_tiles2);
+          align_q = new Float32Array(num_tiles2);
+          
+          current_alignment_cycle = 1; //phenotype
+          current_alignment_tile = 0;
+          LoadImage(current_alignment_cycle, current_alignment_tile, 0, 0, AutoAlignCallback);
+        }
+        function AutoAlignCallback()
+        {
+          document.getElementById("status").innerHTML = "cycle-"+current_alignment_cycle+" tile-"+current_alignment_tile;
+
+          if (current_alignment_cycle==1) //phenotype image arrived
+          {
+            saveforalign();
+            findclosest(current_alignment_tile);
+            current_alignment_cycle = 0; //in-situ
+            LoadImage(current_alignment_cycle, closest_is_tile, 0, 0, AutoAlignCallback);
+          }
+          else //insitu image arrived
+          {
+            fastalign(current_alignment_cycle, current_alignment_tile);
+            align_tile[current_alignment_tile] = closest_is_tile;
+            align_x[current_alignment_tile] = last_align_x;
+            align_y[current_alignment_tile] = last_align_y;
+            align_q[current_alignment_tile] = last_align_q;
+
+            current_alignment_tile++;
+            if (current_alignment_tile < num_tiles2)
+            {
+              current_alignment_cycle = 1;
+              LoadImage(current_alignment_cycle, current_alignment_tile, 0, 0, AutoAlignCallback);
+            }
+            else
+            {
+              SaveAlignmentFile();
+              alert("done");
+            }
+
+            if (current_alignment_tile%300 == 0) SaveAlignmentFile();
+          }
+        }
+
+
+        function SaveAlignmentFile()
+        {
+          var out = "";
+          for (var i=0; i<num_tiles2; i++)
+          {
+            if (i>0) out += "\n";
+            out += i+"\t"+align_tile[i]+"\t"+align_x[i]+"\t"+align_y[i]+"\t"+align_q[i];
+          }
+
+          SaveFile(out, "Alignment.txt");
+        }
+        var closest_is_tile = 0;
+        function findclosest(tile)
+        {
+          /*var p_tile = tile;
+          var p_x = StagePositions2X[p_tile];// -196; //+failed
+          var p_y = StagePositions2Y[p_tile];// +503;
+
+          var best = -1, best_delta;
+          for (var i=0; i<StagePositions1X.length; i++)
+          {
+            var dx = StagePositions1X[i]-p_x;
+            var dy = StagePositions1Y[i]-p_y;
+
+            var delta = Math.sqrt(dx*dx + dy*dy);
+
+            if (best == -1 || delta < best_delta)
+            {
+              best = i;
+              best_delta = delta;
+            }
+          }
+          //best--;
+          closest_is_tile = best;*/
+
+          closest_is_tile = tile;
+
+          //align_x[p_tile] = (p_x-StagePositions1X[best])*0.325;
+          //align_y[p_tile] = (p_y-StagePositions1Y[best])*0.325;
+
+          //alert(p_tile+" "+p_x+" "+p_y+" - "+best+" "+StagePositions1X[best]+" "+StagePositions1Y[best]+" delta: "+best_delta)
+          document.getElementById("tile").value=tile;
+          document.getElementById("cycle").value = 0;
+          //UpdateCanvas();
+        }
+
+
+
+
+        function SaveFile(data, filename)
+        {
+            var bb = new Blob([data], {type: 'text/plain'});
+            var a = document.createElement('a');
+            a.download = filename;
+            a.href = window.URL.createObjectURL(bb);
+            a.textContent = 'Klick here to save';
+            a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
+            document.getElementById("save").appendChild(a);
+            a.click();
+        }
+    </script>

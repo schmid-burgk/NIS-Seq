@@ -1,0 +1,482 @@
+
+
+
+<!--
+==============================================================================
+
+Copyright 2020-2024 by Jonathan Schmid-Burgk
+
+==============================================================================
+-->
+
+
+<meta http-equiv="Content-Script-Type" content="text/javascript">
+<META HTTP-EQUIV="CACHE-CONTROL" CONTENT="NO-CACHE">
+    <html>
+        <head>
+            <title>ImageFiend 1.0</title>
+        </head>
+        <body style="margin: 0; font-family: Helvetica; font-weight: 100; background-size: 200vw 200vh" background="brown1.jpg">
+          <div style="background-color: rgba(255,255,255,0.2); margin: 0.5%; padding: 1%; width: 47.25%; height: 100%">
+            <b>NIS-Seq Analysis Suite v1.0 - Image Mapping (coarse, step 1/2)</b>
+            <br>JSB lab 2020-2024
+            <br>
+
+            <br>In-situ images (TIFF, 2048x2048, 16 bit, sorted by tile > channel, only load one cycle):
+            <br><input id="channels1" value="4" /> channels
+            <br><input type="file" id="ImageFiles1" onchange="num_tiles1=this.files.length/document.getElementById('channels1').value;" multiple/>
+            <br><input type="file" id="StageFile1" onchange="LoadStageFile1();" /> Stage positions (time-well-tile-x-y in µm, with header)
+            <br><input type="checkbox" id="erode1" /> Shrink masks
+
+            <br>
+            <br>Phenotype images (TIFF, 2048x2048, 16 bit, sorted by tile > channel):
+            <br><input id="channels2" value="3" /> channels
+            <br><input type="file" id="ImageFiles2" onchange="num_tiles2=this.files.length/document.getElementById('channels2').value;" multiple/>
+            <br><input type="file" id="StageFile2" onchange="LoadStageFile2();" /> Stage positions (time-well-tile-x-y in µm, with header)
+            <br><input type="checkbox" id="erode2" /> Shrink masks
+
+            <br>
+            <br>Internal search tile size (power of 2): <input id="tilesize" value="256"/>
+            <br>Scaling factor (in-situ pixel size / phenotype pixel size): <input id="scaling" value="3"/>
+            <br>Rotation (deg): <input id="rotation" value="0"/>
+            <br>Cap image signal at: <input id="capnuclei" value="1000"/>
+
+            <br>
+            <br>
+            <button onclick="StartAutoDict()">1. Generate dictionary</button>
+            <button onclick="StartAutoAlign()">2. Start alignment</button>
+            
+          </div>
+
+          <div style="position:absolute; top:0; right:0; background-color: rgba(255,255,255,0.2); margin: 0.5%; padding: 1%; width: 47.25%; height: 100%">
+            <b>Inspect raw images:</b>
+            <br><br>
+            <canvas id="maincanvas" width=2048 height=2048 style="width: 40vw; height: 40vw"></canvas>
+
+            <br>
+            <br><input type="range" id="cycle" min="0" max="1" value="0" onchange="UpdateCanvas()" /> In-situ / phenotype
+            <br><input type="range" min="0" max="2000" id="tile" value="0" onchange="UpdateCanvas()" /> Tile
+            <br><input type="range" min="0" max="3" id="channel" value="0" onchange="UpdateCanvas()" /> Channel
+            <br><input type="range" min="0" max="20" step="0.001" id="brightness" onchange="UpdateCanvas()" /> Brightness
+            <br>
+          </div>
+
+          <div id="status" style="position:absolute; bottom:0; left:0"></div>
+
+          <div id="save" style = "display:none">test</div>
+        </body>
+    </html>
+
+    <script type="text/javascript" src="fourier.js"></script>
+    <script type="text/javascript" src="pako.js"></script>
+    <script type="text/javascript" src="UTIF.js"></script>
+    <script>
+
+
+        var align_x, align_y, align_tile, align_q;
+
+        var num_tiles1 = 0;
+        var num_tiles2 = 0;
+
+
+        //LOAD STAGE POSITIONS:
+        var StagePositions1X = [], StagePositions1Y = [];
+        function LoadStageFile1()
+        {
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            for (var i=0; i<table.length-1; i++)
+            {
+              var line = table[i+1].split("\t");
+
+              StagePositions1X[i] = line[3+0]*1;
+              StagePositions1Y[i] = line[3+1]*1;
+            }
+          };
+          reader.readAsText(document.getElementById("StageFile1").files[0]);
+        }
+        var StagePositions2X = [], StagePositions2Y = [];
+        function LoadStageFile2()
+        {
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            for (var i=0; i<table.length-1; i++)
+            {
+              var line = table[i+1].split("\t");
+
+              StagePositions2X[i] = line[3+0]*1;
+              StagePositions2Y[i] = line[3+1]*1;
+            }
+          };
+          reader.readAsText(document.getElementById("StageFile2").files[0]);
+        }
+
+
+
+
+        function UpdateCanvas()
+        {
+          var cycle = document.getElementById("cycle").value*1;
+          var tile = document.getElementById("tile").value*1;
+          var channel = document.getElementById("channel").value*1;
+
+          LoadImage(cycle, tile, channel, 0, 0);
+        }
+
+        var current_image_data;
+        function LoadImage(cycle, tile, channel, filter, callback)
+        {
+          var brightness = document.getElementById("brightness").value*1;
+
+          var files = document.getElementById("ImageFiles1").files;
+          var channels = document.getElementById("channels1").value*1;
+          var image_id = tile*channels + channel;
+
+          if (cycle==1) //phenotype
+          {
+              files = document.getElementById("ImageFiles2").files;
+              channels = document.getElementById("channels2").value*1;
+              image_id = tile*channels + channel;
+          }
+          
+
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            //decode TIF:
+            var ifds = UTIF.decode(reader.result);
+            UTIF.decodeImage(reader.result, ifds[0]);
+            var data = new Uint16Array(ifds[0].data);
+            current_image_data = new Uint16Array(2048*2048);
+            for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
+              
+            var capnuclei = document.getElementById("capnuclei").value*1;
+            var erode1 = document.getElementById("erode1").checked;
+            var erode2 = document.getElementById("erode2").checked;
+
+            var canvas = document.getElementById("maincanvas");
+            //canvas.width = 1024;
+            //canvas.height = 1024;
+            var ImageContext = canvas.getContext("2d");
+            var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
+            var ImageArray = new Uint8Array(ImageData.data.buffer);
+
+            if ( (erode1 && cycle==0) || (erode2 && cycle==1) )
+              for (var i=0; i<5; i++)
+            {
+                var dummy = new Uint16Array(2048*2048);
+                for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) dummy[x+y*2048] = current_image_data[x+y*2048];
+                for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+                {
+                  if (current_image_data[x+y*2048] != dummy[x+1+y*2048] ||
+                      current_image_data[x+y*2048] != dummy[x-1+y*2048] ||
+                      current_image_data[x+y*2048] != dummy[x+(y+1)*2048] ||
+                      current_image_data[x+y*2048] != dummy[x+(y-1)*2048]) current_image_data[x+y*2048] = 0;
+                }
+            }
+
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > capnuclei) current_image_data[x+y*2048] = capnuclei;
+            
+            var max = 0;
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > max) max = current_image_data[x+y*2048];
+
+            for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+            {
+                var index = x+2048*y;
+
+                var val = 0;
+                var scale=1; if (cycle==0) scale=3;
+                //var xx = Math.floor(((x +shiftx)-1024)/scale +1024);// +align_x[cycle+tile*cycles];
+                //var yy = Math.floor(((y +shifty)-1024)/scale +1024);// +align_y[cycle+tile*cycles];
+                var xx = x;
+                var yy = y;
+                /*if (cycle==0)
+                {
+                  xx = Math.floor( ((xx-1024)/3)+1024 );
+                  yy = Math.floor( ((yy-1024)/3)+1024 );
+                  xx += shiftx;
+                  yy += shifty;
+                }*/
+                if (xx >= 0 && yy >= 0 && xx < 2048 && yy < 2048) val = current_image_data[xx+2048*yy]/max*255 *brightness;
+                if (val > 255) val = 255;
+
+                ImageArray[4*index+0] = val;
+                ImageArray[4*index+1] = val;
+                ImageArray[4*index+2] = val;
+                ImageArray[4*index+3] = 255;
+            }
+
+            ImageContext.putImageData(ImageData, 0, 0);
+
+            if (callback) callback();
+          };
+          reader.readAsArrayBuffer(files[image_id]);
+        }
+
+        
+
+        //CREATE DICTIONARY:
+
+        var current_alignment_tile = 0;
+        var FrequencyProfile = [];
+        function StartAutoDict()
+        {
+          current_alignment_tile = 0;
+          LoadImage(0, current_alignment_tile, 0, 0, AutoDictCallback);
+        }
+        function AutoDictCallback()
+        {
+          document.getElementById("status").innerHTML = "tile-"+current_alignment_tile;
+
+          //scale down that tile:
+          var tilesize = document.getElementById("tilesize").value*1;
+          var data_scaled = new Float32Array(tilesize*tilesize);
+          for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
+          {
+            var x_scaled = Math.floor(x*tilesize/2048);
+            var y_scaled = Math.floor(y*tilesize/2048);
+            data_scaled[x_scaled + y_scaled*tilesize] += current_image_data[x + y*2048];
+          }
+
+          //do FFT:
+          var FrequencyProfile_dummy = [];
+          Fourier.transform(data_scaled, FrequencyProfile_dummy);
+
+          //convert to float32 to save mem:
+          FrequencyProfile[current_alignment_tile] = new Float32Array(tilesize*tilesize*2); //unfortunately can't be a float32 array
+          for (var x=0; x<tilesize; x++) for (var y=0; y<tilesize; y++)
+          {
+            FrequencyProfile[current_alignment_tile][0*tilesize*tilesize + x+y*tilesize] = FrequencyProfile_dummy[x+y*tilesize].real;
+            FrequencyProfile[current_alignment_tile][1*tilesize*tilesize + x+y*tilesize] = FrequencyProfile_dummy[x+y*tilesize].imag;
+          }
+
+          current_alignment_tile++;
+          if (current_alignment_tile < num_tiles1) LoadImage(0, current_alignment_tile, 0, 0, AutoDictCallback);
+          else alert("done");
+        }
+
+
+
+
+        //SEARCH:
+        var current_alignment_tile = 0;
+        function StartAutoAlign()
+        {
+          align_tile = new Int16Array(num_tiles2);
+          align_x = new Int16Array(num_tiles2);
+          align_y = new Int16Array(num_tiles2);
+          align_q = new Float32Array(num_tiles2);
+
+          current_alignment_tile = 0;
+          LoadImage(1, current_alignment_tile, 0, 0, AutoAlignCallback);
+        }
+        function AutoAlignCallback()
+        {
+          document.getElementById("status").innerHTML = "tile-"+current_alignment_tile+" last hit: "+align_tile[current_alignment_tile-1];
+
+          MatchImageToProfiles(current_image_data, 2048, 2048, current_alignment_tile);
+
+          current_alignment_tile++;
+          if (current_alignment_tile < num_tiles2) LoadImage(1, current_alignment_tile, 0, 0, AutoAlignCallback);
+          else
+          {
+            SaveAlignmentFile();
+            alert("done");
+          }
+
+          if (current_alignment_tile%300 == 0) SaveAlignmentFile();
+        }
+        var CorrelationData;
+        function MatchImageToProfiles(data, w, h, tile)
+        {
+          var tilesize = document.getElementById("tilesize").value*1;
+          var scaling = document.getElementById("scaling").value*1;
+          var rotation = document.getElementById("rotation").value*1;
+
+          //scale down input image, point-mirror:
+          var data_scaled = new Float32Array(tilesize*tilesize);
+          var rotation2 = rotation/360*2*Math.PI;
+          for (var x=0; x<w; x++) for (var y=0; y<h; y++)
+          {
+            //rotate around center of the image:
+            var x_rot = (x-w/2)*Math.cos(rotation2) + (y-h/2)*Math.sin(rotation2);
+            var y_rot = (y-h/2)*Math.cos(rotation2) - (x-w/2)*Math.sin(rotation2);
+
+            //scale to FFT array size, place in the center:
+            var x_scaled = tilesize/2 + x_rot/scaling*tilesize/w;
+            var y_scaled = tilesize/2 + y_rot/scaling*tilesize/h;
+
+            //round:
+            x_scaled = Math.round(x_scaled);
+            y_scaled = Math.round(y_scaled);
+
+            //point-mirror to calculate correlation:
+            x_scaled = tilesize-1-x_scaled;
+            y_scaled = tilesize-1-y_scaled;
+
+            //check bounds:
+            if (x_scaled>=0 && x_scaled<tilesize && y_scaled>=0 && y_scaled<tilesize)
+            {
+              data_scaled[x_scaled + y_scaled*tilesize] += data[x + y*w];
+            }
+          }
+
+
+          //display(data_scaled, tilesize, tilesize);
+
+
+          //do FFT:
+          var QueryFrequencyProfile = []; //unfortunately can't be a float32 array
+          Fourier.transform(data_scaled, QueryFrequencyProfile);
+          //alert("FFT done");
+
+          //mask low frequencies:
+          for (var x=0; x<tilesize; x++) for (var y=0; y<tilesize; y++)
+          {
+            var d = ((x-tilesize/2)**2) + ((y-tilesize/2)**2);
+            if (d < 1000)
+            {
+              var xx = (x+tilesize/2)%tilesize;
+              var yy = (y+tilesize/2)%tilesize;
+
+              QueryFrequencyProfile[xx + yy*tilesize].real = 0;
+              QueryFrequencyProfile[xx + yy*tilesize].imag = 0;
+            }
+          }
+
+          //go through reference profiles:
+          var max_reference = 0, max_correlation = 0, max_x = 0, max_y = 0;
+          var num_tested=0;
+          for (var i=0; i<FrequencyProfile.length; i++)
+          {
+              //calc stage distance:
+              var dx = StagePositions2X[tile]-StagePositions1X[i];
+              var dy = StagePositions2Y[tile]-StagePositions1Y[i];
+              var d = (dx*dx+dy*dy)**0.5;
+
+              if (d < 1000)
+              {
+                  num_tested++;
+
+                  //calc correlation:
+                  var CorrelationSpectrum = [];
+                  for (var x=0; x<tilesize; x++) for (var y=0; y<tilesize; y++)
+                  {
+                    var real =    QueryFrequencyProfile[x + y*tilesize].real*FrequencyProfile[i][0*tilesize*tilesize + x+y*tilesize]
+                                 -QueryFrequencyProfile[x + y*tilesize].imag*FrequencyProfile[i][1*tilesize*tilesize + x+y*tilesize];
+
+                    var imag =    QueryFrequencyProfile[x + y*tilesize].real*FrequencyProfile[i][1*tilesize*tilesize + x+y*tilesize]
+                                 +QueryFrequencyProfile[x + y*tilesize].imag*FrequencyProfile[i][0*tilesize*tilesize + x+y*tilesize];
+
+                    CorrelationSpectrum[x + y*tilesize] = new Fourier.Complex(real, imag);
+                  }
+                  //alert("spectra multiplied");
+
+                  //iFFT:
+                  CorrelationData = [];
+                  Fourier.invert(CorrelationSpectrum, CorrelationData);
+                  //Fourier.invert(QueryFrequencyProfile, CorrelationData); //output query data
+                  //alert("iFFT computed");
+
+                  //display(CorrelationData, tilesize, tilesize);
+
+                  //find max of correlation:
+                  var max = 0, sum = 0, max_xx, max_yx;
+                  for (var x=0; x<tilesize; x++) for (var y=0; y<tilesize; y++)
+                  {
+                    sum += CorrelationData[x + y*tilesize];
+                    if (CorrelationData[x + y*tilesize] > max)
+                    {
+                      max = CorrelationData[x + y*tilesize];
+                      max_xx = x;
+                      max_yy = y;
+                    }    
+                  }
+                  //max /= sum;
+
+                  if (max > max_correlation)
+                  {
+                      max_reference = i;
+                      max_correlation = max;
+                      max_x = max_xx;
+                      max_y = max_yy;
+                  }
+     
+
+                  //alert(i+" "+max_correlation) 
+              }
+          }
+          //alert(num_tested)
+
+
+          //alert(max_reference+" "+max_correlation+" "+max_x+" "+max_y+" "+document.getElementById("ImageFiles").files[max_reference].name);
+          if (max_x > tilesize/2) max_x -= tilesize;
+          if (max_y > tilesize/2) max_y -= tilesize;
+          var ref_x = (max_x+1)*w/tilesize;
+          var ref_y = (max_y+1)*h/tilesize;
+
+
+          //alert(max_reference+" "+max_correlation);
+          align_tile[tile] = max_reference;
+          align_x[tile] = ref_x;
+          align_y[tile] = ref_y;
+          align_q[tile] = max_correlation;
+        }
+
+
+
+
+
+
+
+        function display(data,w,h)
+        {
+          var canvas = document.getElementById("maincanvas");
+          var ImageContext = canvas.getContext("2d");
+          var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
+          var ImageArray = new Uint8Array(ImageData.data.buffer);
+          var max = 0;
+          for (var x=0; x<w; x++) for (var y=0; y<h; y++) if (data[x+y*w]>max) max=data[x+y*w];
+          for (var x=0; x<w; x++) for (var y=0; y<h; y++)
+          {
+              var index = x+2048*y;
+              var val = data[x+y*w]/max*255;
+              if (val>255) val=255;
+              if (val<0) val=0;
+
+              ImageArray[4*index+0] = val;
+              ImageArray[4*index+1] = val;
+              ImageArray[4*index+2] = val;
+              ImageArray[4*index+3] = 255;
+          }
+          ImageContext.putImageData(ImageData, 0, 0);
+          alert();
+        }
+
+        function SaveAlignmentFile()
+        {
+          var out = "";
+          for (var i=0; i<num_tiles2; i++)
+          {
+            if (i>0) out += "\n";
+            out += i+"\t"+align_tile[i]+"\t"+align_x[i]+"\t"+align_y[i]+"\t"+align_q[i];
+          }
+
+          SaveFile(out, "CrossObjectiveAlignment.txt");
+        }
+        function SaveFile(data, filename)
+        {
+            var bb = new Blob([data], {type: 'text/plain'});
+            var a = document.createElement('a');
+            a.download = filename;
+            a.href = window.URL.createObjectURL(bb);
+            a.textContent = 'Klick here to save';
+            a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
+            document.getElementById("save").appendChild(a);
+            a.click();
+        }
+    </script>
