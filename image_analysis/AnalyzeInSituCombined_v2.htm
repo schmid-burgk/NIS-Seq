@@ -92,7 +92,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             <br><input type="checkbox" id="filter" onchange="UpdateCanvas()" /> High-pass frequency filter
           </div>
 
-          <div id="status" style="position:absolute; bottom:0; left:0"></div>
+          <div id="status" style="position:absolute; bottom:1.5%; left:1.5%"></div>
 
           <div id="save" style = "display:none">test</div>
         </body>
@@ -103,10 +103,12 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
     <script type="text/javascript" src="UTIF.js"></script>
     <script>
 
+
+        /// GENERAL PUROPSE FUNCTIONS ///
+
         var num_tiles = 1, cycles = 14;
 
-
-        function UpdateCanvas()
+        function UpdateCanvas() //this callback function reads the GUI and updates the presented raw image
         {
           var cycle = document.getElementById("cycle").value*1;
           var tile = document.getElementById("tile").value*1;
@@ -117,7 +119,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
         var current_image_data;
-        function LoadImage(cycle, tile, channel, filter, callback)
+        function LoadImage(cycle, tile, channel, filter, callback) //this function loads a specific raw image
         {
           var cycles = document.getElementById("cycles").value*1;
 
@@ -130,30 +132,29 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           var reader = new FileReader();
           reader.onload = function(evt)
           {
-            //decode TIF:
+            //decode TIFF:
             var ifds = UTIF.decode(reader.result);
             UTIF.decodeImage(reader.result, ifds[0]);
             var data = new Uint16Array(ifds[0].data);
             current_image_data = new Uint16Array(2048*2048);
             for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
 
+            //get access to main canvas object:
             var canvas = document.getElementById("maincanvas");
-            //canvas.width = 1024;
-            //canvas.height = 1024;
             var ImageContext = canvas.getContext("2d");
             var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
             var ImageArray = new Uint8Array(ImageData.data.buffer);
 
-            //spot filter:
+            //optional: high-pass frequency filter:
             var LP1 = new Float32Array(2048*2048), LP2 = new Float32Array(2048*2048);
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = current_image_data[x+y*2048];
             if (filter)
             {
               for (var round=0; round<3; round++)
               {
-                for (var x=0; x<2048-1; x++)    for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+1+y*2048])/2;
+                for (var x=0; x<2048-1; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+1+y*2048])/2;
                 for (var x=2048-1; x>0; x--) for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x-1+y*2048])/2;
-                for (var y=0; y<2048-1; y++)    for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y+1)*2048])/2;
+                for (var y=0; y<2048-1; y++) for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y+1)*2048])/2;
                 for (var y=2048-1; y>0; y--) for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y-1)*2048])/2;
 
                 if (round == 0) for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP2[x+y*2048] = LP1[x+y*2048];
@@ -165,9 +166,11 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
+            //determine the max pixel intensity:
             var max = 0;
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > max) max = current_image_data[x+y*2048];
 
+            //scale image brightness to 0-255:
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
                 var index = x+2048*y;
@@ -184,6 +187,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 ImageArray[4*index+3] = 255;
             }
 
+            //show scaled image:
             ImageContext.putImageData(ImageData, 0, 0);
 
             if (callback) callback();
@@ -191,7 +195,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           reader.readAsArrayBuffer(files[image_id]);
         }
 
-        function LoadMask(tile, callback)
+        function LoadMask(tile, callback) //this function loads a specific mask
         {
           var brightness = document.getElementById("brightness").value*1;
 
@@ -201,22 +205,20 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           var reader = new FileReader();
           reader.onload = function(evt)
           {
-            //decode TIF:
+            //decode TIFF:
             var ifds = UTIF.decode(reader.result);
             UTIF.decodeImage(reader.result, ifds[0]);
             var data = new Uint16Array(ifds[0].data);
             current_image_data = new Uint16Array(2048*2048);
             for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
 
-
+            //get access to main canvas object:
             var canvas = document.getElementById("maincanvas");
-            //canvas.width = 1024;
-            //canvas.height = 1024;
             var ImageContext = canvas.getContext("2d");
             var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
             var ImageArray = new Uint8Array(ImageData.data.buffer);
 
-
+            //determine the max pixel intensity:
             var max = 0;
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
@@ -227,6 +229,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 if (current_image_data[x+y*2048] > max) max = current_image_data[xx+yy*2048];
             }
 
+            //scale image brightness to 0-255:
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
                 var index = x+2048*y;
@@ -245,6 +248,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 ImageArray[4*index+3] = 255;
             }
 
+            //show scaled image:
             ImageContext.putImageData(ImageData, 0, 0);
 
             if (callback) callback();
@@ -252,15 +256,35 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           reader.readAsArrayBuffer(files[image_id]);
         }
 
+        function SaveFile(data, filename) //this function saves the content of data to a file
+        {
+          var experiment_name = document.getElementById("experiment_name").value;
+          var bb = new Blob([data], {type: 'text/plain'});
+          var a = document.createElement('a');
+          a.download = experiment_name+"_"+filename;
+          a.href = window.URL.createObjectURL(bb);
+          a.textContent = 'Klick here to save';
+          a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
+          document.getElementById("save").appendChild(a);
+          a.click();
+        }
+
+
+
+
+
+        /// CYCLE ALIGNMENT ///
+
         var ref_image_data;
         var align_x = new Int16Array(100000);
         var align_y = new Int16Array(100000);
-        function saveforalign()
+
+        function saveforalign() //this function saves the current loaded image as a reference
         {
           ref_image_data = current_image_data;
         }
 
-        function fastalign(cycle, tile)
+        function fastalign(cycle, tile) //this function determines the pixel offset of the current image vs. the reference image
         {
             var res = 1024;
             var scale = 1;
@@ -268,14 +292,15 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             //var res = 256;
             //var scale = 4;
 
-            //mirror ref image, window
+            //mirror reference image, window
             var inv_ref_image = new Float32Array(res*res);
             for (var x=0; x<res; x++) for (var y=0; y<res; y++)
             {
               var win = (1-Math.cos(x/res*2*Math.PI)) * (1-Math.cos(y/res*2*Math.PI));
               inv_ref_image[x+res*y] = ref_image_data[(1024+off-1-x*scale)+2048*(1024+off-1-y*scale)] * win; //removed +off-1
             }
-            //mirror ref image, window
+
+            //mirror image, window
             var scaled_image = new Float32Array(res*res);
             for (var x=0; x<res; x++) for (var y=0; y<res; y++)
             {
@@ -283,9 +308,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               scaled_image[x+res*y] = current_image_data[(1024-off+x*scale)+2048*(1024-off+y*scale)] * win;
             }
 
+            // transform both images to frequency space by 2D FFT
             var ref_image_FFT = [];
             Fourier.transform(inv_ref_image, ref_image_FFT);
-
             var snap_image_FFT = [];
             Fourier.transform(scaled_image, snap_image_FFT); //UNCLEAR IF INT ARRAY OK
 
@@ -302,14 +327,15 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
-            //multiply:
+            //multiply images in frequency space:
             var CorrelationSpectrum = [];
             for (var i=0; i<ref_image_FFT.length; i++) CorrelationSpectrum[i] = ref_image_FFT[i].times(snap_image_FFT[i]);
 
+            //inverse transform:
             var CorrelationData = [];
             Fourier.invert(CorrelationSpectrum, CorrelationData);
 
-            //find max of correlation:
+            //find maximum correlation:
             var max_correlation = 0, max_x = 0, max_y = 0;
             for (var x=0; x<res; x++) for (var y=0; y<res; y++)
               if (CorrelationData[x + y*res] > max_correlation)
@@ -322,13 +348,13 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             if (max_y > res/2) max_y -= res;
             //alert("Fine-alignment: "+max_x+" - "+max_y+" pixels");
 
+            //save offset in global array
             var cycles = document.getElementById("cycles").value*1;
             align_x[cycle+tile*cycles] = max_x*scale;
             align_y[cycle+tile*cycles] = max_y*scale;
         }
 
-
-        function LoadAlignmentFile()
+        function LoadAlignmentFile() //this function loads a previous alignment from a file
         {
           var reader = new FileReader();
           reader.onload = function(evt)
@@ -345,7 +371,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           };
           reader.readAsText(document.getElementById("AlignmentFile").files[0]);
         }
-        function SaveAlignmentFile()
+
+        function SaveAlignmentFile() //this function saves the current alignment to a file
         {
           var cycles = document.getElementById("cycles").value*1;
 
@@ -359,22 +386,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           SaveFile(out, "Alignment.txt");
         }
 
-
-        function SaveFile(data, filename)
-        {
-          var experiment_name = document.getElementById("experiment_name").value;
-          var bb = new Blob([data], {type: 'text/plain'});
-          var a = document.createElement('a');
-          a.download = experiment_name+"_"+filename;
-          a.href = window.URL.createObjectURL(bb);
-          a.textContent = 'Klick here to save';
-          a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
-          document.getElementById("save").appendChild(a);
-          a.click();
-        }
-
         var current_alignment_cycle = 0, current_alignment_tile = 0;
-        function StartAutoAlign()
+        function StartAutoAlign() //this function initiates a callback loop to align all images
         {
           var cycles = document.getElementById("cycles").value*1;
           num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
@@ -386,23 +399,10 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           align_x = new Int16Array(cycles*num_tiles);
           align_y = new Int16Array(cycles*num_tiles);
 
-          /*var limit_to_tile = document.getElementById("limit_to_tile").value;
-          if (limit_to_tile != "")
-          {
-            if (limit_to_tile.indexOf("-") != -1) //range
-            {
-              current_alignment_tile = limit_to_tile.split("-")[0]*1;
-              num_tiles = limit_to_tile.split("-")[1]*1+1;
-            }
-            else //from
-            {
-              current_alignment_tile = limit_to_tile*1;
-            }
-          }*/
-
           LoadImage(current_alignment_cycle, current_alignment_tile, 0, 0, AutoAlignCallback);
         }
-        function AutoAlignCallback()
+
+        function AutoAlignCallback() //this callback function loads the next image, starts the alignment, or saves the final results
         {
           document.getElementById("status").innerHTML = "cycle-"+current_alignment_cycle+" tile-"+current_alignment_tile;
 
@@ -427,14 +427,18 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
 
-        //SPOT DETECTION:
+
+
+        /// SPOT DETECTION ///
+
         var spot_tile = new Uint16Array(100000000), spot_x = new Uint16Array(100000000), spot_y = new Uint16Array(100000000), spot_num = 0;
         var spot_matched = new Uint16Array(100000000);
         var spot_seq = [], spot_max = new Float32Array(100000000);
         var current_spot_channel = 1, current_spot_cycle = 0, current_spot_tile = 0;
         var sum_image;
         var spot_images = []; //needed still for seq calling
-        function StartSpotDetection()
+
+        function StartSpotDetection() //this function initiated the callback loop to detect spots in all tiles
         {
           var cycles = document.getElementById("cycles").value*1;
           num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
@@ -444,24 +448,10 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           current_spot_tile = 0;
           sum_image = new Float32Array(2048*2048);
 
-          //for testing:
-          /*var limit_to_tile = document.getElementById("limit_to_tile").value;
-          if (limit_to_tile != "")
-          {
-            if (limit_to_tile.indexOf("-") != -1) //range
-            {
-              current_spot_tile = limit_to_tile.split("-")[0]*1;
-              num_tiles = limit_to_tile.split("-")[1]*1+1;
-            }
-            else //from
-            {
-              current_spot_tile = limit_to_tile*1;
-            }
-          }*/
-
           LoadImage(current_spot_cycle, current_spot_tile, current_spot_channel, 1, SpotDetectionCallback);
         }
-        function SpotDetectionCallback()
+
+        function SpotDetectionCallback() //this callback function loads the next image, sums up images, starts spot detection, or saves the final results
         {
           var cycles = document.getElementById("cycles").value*1;
           document.getElementById("status").innerHTML = "channel-"+current_spot_channel+" tile-"+current_spot_tile;
@@ -499,7 +489,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
           if (current_spot_channel==1 && current_spot_tile%100 == 0) SaveSpotFile()
         }
-        function SpotDetection()
+
+        function SpotDetection() //this function detects spots as local maxima in the superimposed aligned raw images, using all NIS-Seq channels across the first 3 cycles
         {
           var thr = document.getElementById("spot_detection_thr").value*1;
 
@@ -523,7 +514,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
           }
         }
-        function LoadSpotFile()
+
+        function LoadSpotFile() //this function loads previously detected spots from a file
         {
           var reader = new FileReader();
           reader.onload = function(evt)
@@ -542,7 +534,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           };
           reader.readAsText(document.getElementById("SpotFile").files[0]);
         }
-        function SaveSpotFile()
+
+        function SaveSpotFile() //this function saves detected spots to a file
         {
           var out = "";
           for (var i=0; i<spot_num; i++)
@@ -555,11 +548,15 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
 
-        //basecalling
+
+
+        /// BASE CALLING ///
+
         var current_basecalling_channel = 1, current_basecalling_tile = 0, current_basecalling_cycle = 0;
         var basecalling_kernel1 = new Float32Array(9*9), basecalling_kernel2 = new Float32Array(9*9), basecalling_kernel3 = new Float32Array(9*9);
         var spot_signal;
-        function PrepBasecalling()
+
+        function PrepBasecalling() //this function pre-calculates a kernel for high-pass freuqency filtering of images
         {
           var cycles = document.getElementById("cycles").value*1;
 
@@ -573,24 +570,16 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             for (var y=9-1; y>0; y--) for (var x=0; x<9; x++) basecalling_kernel1[x+y*9] = (basecalling_kernel1[x+y*9]+basecalling_kernel1[x+(y-1)*9])/2;
             if (round == 0) for (var x=0; x<9; x++) for (var y=0; y<9; y++) basecalling_kernel2[x+y*9] = basecalling_kernel1[x+y*9];
           }
-          for (var x=0; x<9; x++) for (var y=0; y<9; y++) //for (var xx=0; xx<5; xx++) for (var yy=0; yy<5; yy++)
+          for (var x=0; x<9; x++) for (var y=0; y<9; y++)
           {
             basecalling_kernel3[x+y*9] = basecalling_kernel2[x+y*9] - basecalling_kernel1[x+y*9];
           }
-          //basecalling_kernel3[3+3*7] = 1;
 
-          /*var out="";
-          for (var y=0; y<9; y++)
-          {
-              for (var x=0; x<9; x++) out += basecalling_kernel3[x+y*9]+"\t";
-              out += "\n";
-          }
-          SaveFile(out,"kernel.txt");*/
-
-          //reserve mem:
+          //reserve memory:
           spot_signal = new Float32Array(spot_num*cycles*3);
         }
-        function StartBasecalling()
+
+        function StartBasecalling() //this function initiates the callback loop for calling bases in all images
         {
           var cycles = document.getElementById("cycles").value*1;
           num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
@@ -600,23 +589,10 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           current_basecalling_tile = 0;
           current_basecalling_channel = 1;
 
-          /*var limit_to_tile = document.getElementById("limit_to_tile").value;
-          if (limit_to_tile != "")
-          {
-            if (limit_to_tile.indexOf("-") != -1) //range
-            {
-              current_basecalling_tile = limit_to_tile.split("-")[0]*1;
-              num_tiles = limit_to_tile.split("-")[1]*1+1;
-            }
-            else //from
-            {
-              current_basecalling_tile = limit_to_tile*1;
-            }
-          }*/
-
           LoadImage(current_basecalling_cycle, current_basecalling_tile, current_basecalling_channel, 0, BasecallingCallback);
         }
-        function BasecallingCallback()
+
+        function BasecallingCallback() //this callback function loads the next image, starts base calling, or saves the final results
         {
           var cycles = document.getElementById("cycles").value*1;
           document.getElementById("status").innerHTML = "channel-"+current_basecalling_channel+" tile-"+current_basecalling_tile+" cycle-"+current_basecalling_cycle;
@@ -641,10 +617,10 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             SaveSequences();
           }
         }
-        function Basecalling()
+
+        function Basecalling() //this function aggregates channel/cycle-wise signal for each spot
         {
           var cycles = document.getElementById("cycles").value*1;
-          //var out = "G\tT\tA\tC\t\n";
 
           for (var i=0; i<spot_num; i++) if (spot_tile[i] == current_basecalling_tile)
           {
@@ -659,7 +635,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                   var xxx = spot_x[i]-5+x+xx + align_x[current_basecalling_cycle+current_basecalling_tile*cycles];
                   var yyy = spot_y[i]-5+y+yy + align_y[current_basecalling_cycle+current_basecalling_tile*cycles];
                   if (xxx>=0 && xxx<2048 && yyy>=0 && yyy<2048) val2 += basecalling_kernel3[(xx+1)+(yy+1)*9] * spot_images[ch][xxx+yyy*2048]; //sum
-                  //if (xx>=0 && xx<2048 && yy>=0 && yy<2048) if (spot_images[ch][xx+yy*2048]>val) val = spot_images[ch][xx+yy*2048]; //max, vorsicht: per-cycle
                 }
                 if (val2>0) val += val2;
               }
@@ -668,7 +643,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
           }
         }
-        function SaveSequences()
+
+        function SaveSequences() //this function calls bases from aggregated channel/cycle-wise signals for each spot and saves them to a file
         {
           var cycles = document.getElementById("cycles").value*1;
 
@@ -722,15 +698,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             //match to dict:
             total++;
             var found = 0;
-            //seq = ReverseComplement(seq);
-            /*for (var i=0; i<barcode_dictionary.length; i++)
-            {
-              var base_match=0;
-              for (var ii=0; ii<10; ii++) if (barcode_dictionary[i][ii] == seq[ii]) base_match++;
-
-              if (base_match >= 10) found=1; //currently limited to 10 bases perfect match
-            }*/
-            //if (barcode_dictionary.indexOf(seq) != -1)
             if (found)
             {
               matched++;
@@ -740,9 +707,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           SaveFile(out, "Sequences_"+(out_file_num+1)+".txt");
         }
 
-
         var compensation_matrix = new Float32Array(3*3);
-        function LoadCompensationMatrix()
+        function LoadCompensationMatrix() //this function loads a compensation matrix from a file
         {
           var reader = new FileReader();
           reader.onload = function(evt)
@@ -760,10 +726,15 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           reader.readAsText(document.getElementById("MatrixFile").files[0]);
         }
 
+
+
+        /// MATCHING TO REFERENCE LIBRARY ///
+
         var reference_library;
         var reference_library_loaded = false;
         var reference_library_lookup;
-        function LoadReferenceFile()
+
+        function LoadReferenceFile() //this function loads a reference sequence library from a file, and generates a fast lookup table using the rev-com 3' sequence
         {
           var cycles = document.getElementById("cycles").value*1;
           var reader = new FileReader();
@@ -786,7 +757,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           };
           reader.readAsText(document.getElementById("ReferenceFile").files[0]);
         }
-        function FilterMatchingSpots()
+
+        function FilterMatchingSpots() //this function eliminates all spot sequences not matching the reference library
         {
           if (!reference_library_loaded)
           {
@@ -810,7 +782,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           alert(spot_num+" of "+spot_num_old+" spots were filtered to match reference library");
         }
 
-        function ReverseComplement(A)
+        function ReverseComplement(A) //this function reverse-complements a DNA sequence in capital letters
         {
             var dummy = "";
             for (var i=0; i<A.length; i++)
@@ -827,11 +799,12 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
 
 
-        //ASSIGN SPOTS TO NUCLEI:
+        /// ASSIGN SPOTS TO NUCLEI ///
 
         var current_cropping_cycle = 0, current_cropping_tile = 0;
         var total_aligned_cells, total_assigned_cells, ambig_cells;
-        function StartCropping()
+
+        function StartCropping() //this function initiates a callback loop to assign spots to nuclei across all tiles
         {
           var cycles = document.getElementById("cycles").value*1;
           num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
@@ -845,7 +818,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           ambig_cells = 0;
           LoadMask(current_cropping_tile, CroppingCallback);
         }
-        function CroppingCallback()
+
+        function CroppingCallback() //this callback function loads the next mask, starts assigning spoots to nuclei, or saves the final results
         {
           document.getElementById("status").innerHTML = " tile-"+current_cropping_tile;
 
@@ -862,8 +836,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             alert(total_assigned_cells+" of "+total_aligned_cells+" cells assigned a barcode. Ambiguous: "+ambig_cells);
           }
         }
+
         var out = "";
-        function CropCells(tile)
+        function CropCells(tile) //this function assigns spots to nuclei
         {
           var tile_is = tile;
 
@@ -975,7 +950,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
                 var perfect_seq = seq_lookup_index_reverse[maxseq];
 
-                out += tile+"\t"+cell+"\t"+cell_center_x+"\t"+cell_center_y+"\t"+perfect_seq+"\t"+nuclear_max_intensity[tile][cell]+"\n"; //sum+"\t"+max+"\t"+secondmax+"\n";
+                out += tile+"\t"+cell+"\t"+cell_center_x+"\t"+cell_center_y+"\t"+perfect_seq+"\t"+nuclear_max_intensity[tile][cell]+"\n";
                 total_assigned_cells++;
               }
               else ambig_cells++;
@@ -983,16 +958,19 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             total_aligned_cells++; /// 
           }       
         }
-        function SaveCroppingFile()
+
+        function SaveCroppingFile() //this function saves the consensus sequences of each nucleus to a file
         {
           SaveFile(out, "NuclearSequences.txt");
         }
 
 
-        //MEASURE NUCLEAR INTENSITY:
+
+
+        /// MEASURE NUCLEAR INTENSITY ///
 
         var nuclear_mask_image, nuclear_max_intensity;
-        function StartMeasureNuclearIntensity()
+        function StartMeasureNuclearIntensity() //this function initiates a callback loop to measure max nuclear intensity across cycles, channels, and tiles
         {
           var cycles = document.getElementById("cycles").value*1;
           num_tiles = document.getElementById("ImageFiles").files.length/4/cycles;
@@ -1006,7 +984,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
           LoadMask(current_basecalling_tile, MeasureNuclearIntensityCallback);
         }
-        function MeasureNuclearIntensityCallback()
+
+        function MeasureNuclearIntensityCallback() //this callback function loads the next image, integrates channel/cycle-wise raw intensity across nuclei, determines the max intensity for each nucleus, and saves the result table to a file
         {
           var cycles = document.getElementById("cycles").value*1;
           document.getElementById("status").innerHTML = "channel-"+current_basecalling_channel+" tile-"+current_basecalling_tile+" cycle-"+current_basecalling_cycle;
@@ -1054,7 +1033,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           }
           if (current_basecalling_cycle == cycles) //last cycle
           {
-            //SaveSequences();
             for (var nuc=1; nuc<nuclear_num; nuc++) out += "\n"+current_basecalling_tile+"\t"+nuc+"\t"+nuclear_max_intensity[current_basecalling_tile][nuc];
 
             current_basecalling_cycle=-1;
