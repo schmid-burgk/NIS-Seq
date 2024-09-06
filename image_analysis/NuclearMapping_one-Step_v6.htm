@@ -14,7 +14,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 <META HTTP-EQUIV="CACHE-CONTROL" CONTENT="NO-CACHE">
     <html>
         <head>
-            <title>ImageFiend 1.0</title>
+            <title>NIS-Seq Analysis Suite v1.0 - Image Mapping (same objective)</title>
         </head>
         <body style="margin: 0; font-family: Helvetica; font-weight: 100; background-size: 200vw 200vh" background="brown1.jpg">
           <div style="background-color: rgba(255,255,255,0.2); margin: 0.5%; padding: 1%; width: 47.25%; height: 100%">
@@ -60,14 +60,13 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
     <script type="text/javascript" src="UTIF.js"></script>
     <script>
 
-        var align_x, align_y, align_tile, align_q;
+
+    	/// GENERAL PUROPSE FUNCTIONS ///
 
         var num_tiles1 = 0;
         var num_tiles2 = 0;
 
-
-
-        function UpdateCanvas()
+        function UpdateCanvas() //this callback function reads the GUI and updates the presented raw image
         {
           var cycle = document.getElementById("cycle").value*1;
           var tile = document.getElementById("tile").value*1;
@@ -77,11 +76,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
         var current_image_data;
-        function LoadImage(cycle, tile, channel, filter, callback)
+        function LoadImage(cycle, tile, channel, filter, callback) //this function loads a specific raw image
         {
           var brightness = document.getElementById("brightness").value*1;
-
-
           var files = document.getElementById("ImageFiles1").files;
           var channels = document.getElementById("channels1").value*1;
           var image_id = tile*channels + channel;
@@ -93,25 +90,23 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               image_id = tile*channels + channel;
           }
 
-
           var reader = new FileReader();
           reader.onload = function(evt)
           {
-            //decode TIF:
+            //decode TIFF:
             var ifds = UTIF.decode(reader.result);
             UTIF.decodeImage(reader.result, ifds[0]);
             var data = new Uint16Array(ifds[0].data);
             current_image_data = new Uint16Array(2048*2048);
             for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
 
+            //get access to main canvas object:
             var canvas = document.getElementById("maincanvas");
-            //canvas.width = 1024;
-            //canvas.height = 1024;
             var ImageContext = canvas.getContext("2d");
             var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
             var ImageArray = new Uint8Array(ImageData.data.buffer);
 
-            //spot filter:
+            //optional: high-pass frequency filter:
             var LP1 = new Float32Array(2048*2048), LP2 = new Float32Array(2048*2048);
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = current_image_data[x+y*2048];
             if (filter)
@@ -132,28 +127,22 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
+            //limit nuclear intensity:
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > 1000) current_image_data[x+y*2048] = 1000; //cap nuclei
 
+            //determine the max pixel intensity:
             var max = 0;
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) if (current_image_data[x+y*2048] > max) max = current_image_data[x+y*2048];
 
+            //scale image brightness to 0-255:
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
                 var index = x+2048*y;
 
                 var val = 0;
                 var scale=1; if (cycle==0) scale=3;
-                //var xx = Math.floor(((x +shiftx)-1024)/scale +1024);// +align_x[cycle+tile*cycles];
-                //var yy = Math.floor(((y +shifty)-1024)/scale +1024);// +align_y[cycle+tile*cycles];
                 var xx = x;
                 var yy = y;
-                /*if (cycle==0)
-                {
-                  xx = Math.floor( ((xx-1024)/3)+1024 );
-                  yy = Math.floor( ((yy-1024)/3)+1024 );
-                  xx += shiftx;
-                  yy += shifty;
-                }*/
                 if (xx >= 0 && yy >= 0 && xx < 2048 && yy < 2048) val = current_image_data[xx+2048*yy]/max*255 *brightness;
                 if (val > 255) val = 255;
 
@@ -163,6 +152,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 ImageArray[4*index+3] = 255;
             }
 
+            //show scaled image:
             ImageContext.putImageData(ImageData, 0, 0);
 
             if (callback) callback();
@@ -170,44 +160,36 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           reader.readAsArrayBuffer(files[image_id]);
         }
 
+        function SaveFile(data, filename) //this function saves the content of data to a file
+        {
+            var bb = new Blob([data], {type: 'text/plain'});
+            var a = document.createElement('a');
+            a.download = filename;
+            a.href = window.URL.createObjectURL(bb);
+            a.textContent = 'Klick here to save';
+            a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
+            document.getElementById("save").appendChild(a);
+            a.click();
+        }
 
 
 
-
-
-
-
-
-
-
-
+        /// IMAGE ALIGNMENT ///
 
         var ref_image_data;
-        var align_x, align_y;
-        function saveforalign()
+        var align_x, align_y, align_tile, align_q;
+        function saveforalign() //this function saves the current loaded image as a reference
         {
           ref_image_data = current_image_data;
-
-          //scale down 3x
-          /*var scaled = new Float32Array(2048*2048);
-          for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
-          {
-            var xx = Math.floor((x-1024)/3+1024);
-            var yy = Math.floor((y-1024)/3+1024);
-
-            scaled[xx+yy*2048] += current_image_data[x+y*2048];
-          }
-
-          ref_image_data = scaled;*/
         }
+
         var last_align_x, last_align_y, last_align_q;
-        function fastalign(cycle, tile)
+        var closest_is_tile = 0;
+        function fastalign(cycle, tile) //this function determines the pixel offset of the current image vs. the reference image
         {
             var res = 1024;
             var scale = 2;
             var off = res/2*scale;
-            //var res = 256;
-            //var scale = 4;
 
             //mirror ref image, window
             var inv_ref_image = new Float32Array(res*res);
@@ -217,7 +199,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               if (ref_image_data[(1024+off-1-x*scale)+2048*(1024+off-1-y*scale)]) inv_ref_image[x+res*y] = ref_image_data[(1024+off-1-x*scale)+2048*(1024+off-1-y*scale)] * win;
               //the if is needed because some images lack the last 8 pixels
             }
-            //mirror ref image, window
+
+            //mirror image, window
             var scaled_image = new Float32Array(res*res);
             for (var x=0; x<res; x++) for (var y=0; y<res; y++)
             {
@@ -226,9 +209,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               //the if is needed because some images lack the last 8 pixels
             }
 
+            // transform both images to frequency space by 2D FFT
             var ref_image_FFT = [];
             Fourier.transform(inv_ref_image, ref_image_FFT);
-
             var snap_image_FFT = [];
             Fourier.transform(scaled_image, snap_image_FFT); //UNCLEAR IF INT ARRAY OK
 
@@ -245,14 +228,15 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
-            //multiply:
+            //multiply images in frequency space:
             var CorrelationSpectrum = [];
             for (var i=0; i<ref_image_FFT.length; i++) CorrelationSpectrum[i] = ref_image_FFT[i].times(snap_image_FFT[i]);
 
+            //inverse transform:
             var CorrelationData = [];
             Fourier.invert(CorrelationSpectrum, CorrelationData);
 
-            //find max of correlation:
+            //find maximum correlation:
             var max_correlation = 0, max_x = 0, max_y = 0;
             for (var x=0; x<res; x++) for (var y=0; y<res; y++)
               if (CorrelationData[x + y*res] > max_correlation)
@@ -265,7 +249,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             if (max_y > res/2) max_y -= res;
             //alert("Fine-alignment: "+max_x+" - "+max_y+" pixels "+max_correlation);
 
-            //output correlation plot:
+            //show correlation plot:
             var canvas = document.getElementById("maincanvas");
             var ImageContext = canvas.getContext("2d");
             var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
@@ -282,13 +266,14 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
             ImageContext.putImageData(ImageData, 0, 0);
 
-
+            //save result to global variables:
             last_align_x = max_x*scale;
             last_align_y = max_y*scale;
             last_align_q = 0;
         }
+
         var current_alignment_cycle = 0, current_alignment_tile = 0;
-        function StartAutoAlign()
+        function StartAutoAlign() //this function initiates a callback loop to align all images
         {
           align_tile = new Int16Array(num_tiles2);
           align_x = new Int16Array(num_tiles2);
@@ -299,14 +284,18 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           current_alignment_tile = 0;
           LoadImage(current_alignment_cycle, current_alignment_tile, 0, 0, AutoAlignCallback);
         }
-        function AutoAlignCallback()
+        function AutoAlignCallback() //this callback function loads the next image, starts the alignment, or saves the final results
         {
           document.getElementById("status").innerHTML = "cycle-"+current_alignment_cycle+" tile-"+current_alignment_tile;
 
           if (current_alignment_cycle==1) //phenotype image arrived
           {
             saveforalign();
-            findclosest(current_alignment_tile);
+
+            closest_is_tile = current_alignment_tile;
+          	document.getElementById("tile").value=current_alignment_tile;
+          	document.getElementById("cycle").value = 0;
+
             current_alignment_cycle = 0; //in-situ
             LoadImage(current_alignment_cycle, closest_is_tile, 0, 0, AutoAlignCallback);
           }
@@ -334,8 +323,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           }
         }
 
-
-        function SaveAlignmentFile()
+        function SaveAlignmentFile() //this function saves the current alignment to a file
         {
           var out = "";
           for (var i=0; i<num_tiles2; i++)
@@ -346,53 +334,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
           SaveFile(out, "Alignment.txt");
         }
-        var closest_is_tile = 0;
-        function findclosest(tile)
-        {
-          /*var p_tile = tile;
-          var p_x = StagePositions2X[p_tile];// -196; //+failed
-          var p_y = StagePositions2Y[p_tile];// +503;
-
-          var best = -1, best_delta;
-          for (var i=0; i<StagePositions1X.length; i++)
-          {
-            var dx = StagePositions1X[i]-p_x;
-            var dy = StagePositions1Y[i]-p_y;
-
-            var delta = Math.sqrt(dx*dx + dy*dy);
-
-            if (best == -1 || delta < best_delta)
-            {
-              best = i;
-              best_delta = delta;
-            }
-          }
-          //best--;
-          closest_is_tile = best;*/
-
-          closest_is_tile = tile;
-
-          //align_x[p_tile] = (p_x-StagePositions1X[best])*0.325;
-          //align_y[p_tile] = (p_y-StagePositions1Y[best])*0.325;
-
-          //alert(p_tile+" "+p_x+" "+p_y+" - "+best+" "+StagePositions1X[best]+" "+StagePositions1Y[best]+" delta: "+best_delta)
-          document.getElementById("tile").value=tile;
-          document.getElementById("cycle").value = 0;
-          //UpdateCanvas();
-        }
 
 
-
-
-        function SaveFile(data, filename)
-        {
-            var bb = new Blob([data], {type: 'text/plain'});
-            var a = document.createElement('a');
-            a.download = filename;
-            a.href = window.URL.createObjectURL(bb);
-            a.textContent = 'Klick here to save';
-            a.dataset.downloadurl = ['text/plain', a.download, a.href].join(':');
-            document.getElementById("save").appendChild(a);
-            a.click();
-        }
     </script>
