@@ -23,11 +23,11 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             <br>
 
             <br>Phenotype cell masks (TIFF, 1 channel, 2048x2048, 16 bit, sorted by tile):
-            <br><input type="file" id="ImageFiles1" onchange="num_tiles1=this.files.length/1;" multiple/>
+            <br><input type="file" id="ImageFiles1" multiple/>
             
             <br>
             <br>Phenotype images (TIFF, 1 channel, 2048x2048, 16 bit, sorted by tile):
-            <br><input type="file" id="ImageFiles2" onchange="num_tiles2=this.files.length/1;" multiple/>
+            <br><input type="file" id="ImageFiles2" multiple/>
 
             <br>
             <br>
@@ -58,13 +58,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
     <script>
 
+        /// GENERAL PUROPSE FUNCTIONS ///
 
-        var align_x, align_y, align_tile, align_q;
-
-        var num_tiles1 = 0;
-        var num_tiles2 = 0;
-
-        function UpdateCanvas()
+        function UpdateCanvas() //this callback function reads the GUI and updates the presented raw image
         {
           var cycle = document.getElementById("cycle").value*1;
           var tile = document.getElementById("tile").value*1;
@@ -74,7 +70,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
         var current_image_data;
-        function LoadImage(cycle, tile, channel, filter, callback)
+        function LoadImage(cycle, tile, channel, filter, callback) //this function loads a specific raw image
         {
           var brightness = document.getElementById("brightness").value*1;
 
@@ -82,7 +78,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           var image_id;
           var file_id;
           var tile_p = tile;
-
 
           if (cycle==1) //phenotype
           {
@@ -94,24 +89,23 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             file_id = tile*1;
           }
 
-
           var reader = new FileReader();
           reader.onload = function(evt)
           {
-            //decode TIF:
+            //decode TIFF:
             var ifds = UTIF.decode(reader.result);
             UTIF.decodeImage(reader.result, ifds[0]);
             var data = new Uint16Array(ifds[0].data);
             current_image_data = new Uint16Array(2048*2048);
             for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
 
+            //get access to main canvas object:
             var canvas = document.getElementById("maincanvas");
-            //canvas.width = 1024;
-            //canvas.height = 1024;
             var ImageContext = canvas.getContext("2d");
             var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
             var ImageArray = new Uint8Array(ImageData.data.buffer);
 
+            //optional: background subtraction
             var background_subtraction = document.getElementById("background_subtraction").checked;
             if (background_subtraction && cycle==1)
             {
@@ -143,30 +137,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
-            /*var highpass = document.getElementById("highpass").checked;
-            if (highpass && cycle==1)
-            {
-              var sum_gfp_highpass = new Float32Array(2048*2048);
-              var LP1 = new Float32Array(2048*2048), LP2 = new Float32Array(2048*2048);
-              for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = current_image_data[x+y*2048];
-              for (var round=0; round<3; round++)
-              {
-                for (var x=0; x<2048-1; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+1+y*2048])/2;
-                for (var x=2048-1; x>0; x--) for (var y=0; y<2048; y++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x-1+y*2048])/2;
-                for (var y=0; y<2048-1; y++) for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y+1)*2048])/2;
-                for (var y=2048-1; y>0; y--) for (var x=0; x<2048; x++) LP1[x+y*2048] = (LP1[x+y*2048]+LP1[x+(y-1)*2048])/2;
-
-                if (round == 0) for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP2[x+y*2048] = LP1[x+y*2048];
-              }
-              for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
-              {
-                if (LP2[x+y*2048] > LP1[x+y*2048]) sum_gfp_highpass[x+y*2048] = LP2[x+y*2048] - LP1[x+y*2048];
-                else sum_gfp_highpass[x+y*2048] = 0;
-              }
-              for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) current_image_data[x+y*2048] = sum_gfp_highpass[x+y*2048]; //LP1[x+y*2048]
-            }*/
-
-
+            //determine the max pixel intensity:
             var max = 0;
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
@@ -177,6 +148,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 if (current_image_data[x+y*2048] > max) max = current_image_data[xx+yy*2048];
             }
 
+            //scale image brightness to 0-255:
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
                 var index = x+2048*y;
@@ -197,21 +169,15 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 if (cell_highlighted[mask_image[x+2048*y]]) ImageArray[4*index+0] = 255;
             }
 
-    
-
+            //show scaled image:
             ImageContext.putImageData(ImageData, 0, 0);
 
             if (callback) callback();
           };
-          reader.readAsArrayBuffer(files[file_id] /*.slice(start, start+2048*2048*2)*/ );
+          reader.readAsArrayBuffer(files[file_id]);
         }
 
-
-
-
-
-
-        function SaveFile(data, filename)
+        function SaveFile(data, filename) //this function saves the content of data to a file
         {
             var bb = new Blob([data], {type: 'text/plain'});
             var a = document.createElement('a');
@@ -224,10 +190,13 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
 
+
+        /// PHENOTYPE QUANTIFICATION ///
+
         var current_cropping_cycle = 0, current_cropping_tile = 0, current_cropping_channel = 0;
         var cropping_image_data = [];
         var cropping_stop;
-        function StartCropping()
+        function StartCropping() //this function initiates a callback loop to phenotype all images
         {
           out = "tile\tcell\tx\ty\tcell_area\tgfp\tgfp_spots\tgfp_norm\tspots_norm\n";
           current_cropping_cycle = 0;
@@ -236,8 +205,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           cropping_stop = 0;
           LoadImage(current_cropping_cycle, current_cropping_tile, current_cropping_channel, 0, CroppingCallback);
         }
+
         var sum_gfp_image = new Float32Array(2048*2048), mask_image = new Float32Array(2048*2048);
-        function CroppingCallback()
+        function CroppingCallback() //this callback function loads the next image, starts the phenotyping, or saves the final results
         {
           if (cropping_stop) return;
           document.getElementById("status").innerHTML = current_cropping_cycle+" "+current_cropping_tile+" "+current_cropping_channel;
@@ -260,7 +230,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             current_cropping_channel = 0;
             current_cropping_tile++;
 
-            if (current_cropping_tile < num_tiles2) LoadImage(current_cropping_cycle, current_cropping_tile, current_cropping_channel, 0, CroppingCallback);
+            if (current_cropping_tile < document.getElementById("ImageFiles1").files.length) LoadImage(current_cropping_cycle, current_cropping_tile, current_cropping_channel, 0, CroppingCallback);
             else
             {
               SaveFile(out, "Phenotypes.txt");
@@ -271,11 +241,12 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
         var out;
         var cell_area, cell_gfp_sum, cell_gfp_spot_sum;
-        function QuantifyPhenotypes()
+        function QuantifyPhenotypes() //this function determines the intensity of GFP across cells in a loaded tile, both with and without high-pass frequency filter
         {
           //mask: mask_image
           //data: sum_gfp_image
 
+          //reserve memory:
           cell_area = new Float32Array(10000);
           var cell_x = new Float32Array(10000);
           var cell_y = new Float32Array(10000);
@@ -283,8 +254,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           cell_gfp_spot_sum = new Float32Array(10000);
           var cellnum = 0;
 
-
-          //spot filter:
+          //high-pass frequency filter:
           var sum_gfp_highpass = new Float32Array(2048*2048);
           var LP1 = new Float32Array(2048*2048), LP2 = new Float32Array(2048*2048);
           for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) LP1[x+y*2048] = sum_gfp_image[x+y*2048];
@@ -303,7 +273,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             else sum_gfp_highpass[x+y*2048] = 0;
           }
 
-          //aggregate signal per cell:
+          //integrate signal per cell:
           for (var x=0; x<2048; x++) for (var y=0; y<2048; y++) 
           {
             var cell = mask_image[x+y*2048];
@@ -321,33 +291,5 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           //output list:
           for (var cell=1; cell<cellnum; cell++) out += current_cropping_tile+"\t"+cell+"\t"+Math.floor(cell_x[cell]/cell_area[cell])+"\t"+Math.floor(cell_y[cell]/cell_area[cell])+"\t"+cell_area[cell]+"\t"+cell_gfp_sum[cell]+"\t"+cell_gfp_spot_sum[cell]+"\t"+cell_gfp_sum[cell]/cell_area[cell]+"\t"+cell_gfp_spot_sum[cell]/cell_area[cell]+"\n";
         }
-
-        var cell_highlighted = new Uint8Array(1000000);
-        function mouseDown(evt)
-        {
-            mouseDragging = true;
-
-            var svg = document.getElementById("maincanvas");
-            var box = svg.getBoundingClientRect();
-
-            mouseX = Math.floor((evt.clientX-box.left)/800*2048);
-            mouseY = Math.floor((evt.clientY-box.top)/800*2048);
-
-            var clickedcell = mask_image[mouseX+mouseY*2048];
-            for (var i=0; i<1000000; i++) cell_highlighted[i] = 0;
-            cell_highlighted[clickedcell] = 1;
-
-            if (clickedcell != 0)
-            {
-              document.getElementById("status").innerHTML = "cell: "+clickedcell+" gfp: "+Math.round(cell_gfp_sum[clickedcell]/cell_area[clickedcell])+" speck: "+Math.round(cell_gfp_spot_sum[clickedcell]/cell_area[clickedcell]*100)+" ratio: "+Math.round(cell_gfp_spot_sum[clickedcell]/cell_gfp_sum[clickedcell]*100*1000)/1000;
-            }
-
-            UpdateCanvas();
-
-            return false;
-        }
-        document.getElementById("maincanvas").addEventListener("mousedown", mouseDown, false);
-   
-
 
     </script>

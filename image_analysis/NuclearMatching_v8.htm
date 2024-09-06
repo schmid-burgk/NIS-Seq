@@ -23,21 +23,19 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             <br>
 
             <br>Phenotyping nuclear masks (TIFF, 1 channel, 2048x2048, 16 bit, sorted by tile):
-            <br><input type="file" id="ImageFiles1" onchange="num_tiles1=this.files.length/1;" multiple/>
+            <br><input type="file" id="ImageFiles1" multiple/>
             <br>
             <br>Phenotyping membrane masks (TIFF, 1 channel, 2048x2048, 16 bit, sorted by tile):
-            <br><input type="file" id="ImageFiles3" onchange="num_tiles3=this.files.length/1;" multiple/>
+            <br><input type="file" id="ImageFiles3" multiple/>
             <br>
             <br>In-situ nuclear masks (TIFF, 1 channel, 2048x2048, 16 bit, sorted by tile):
-            <br><input type="file" id="ImageFiles2" onchange="num_tiles2=this.files.length/1;" multiple/>
+            <br><input type="file" id="ImageFiles2" multiple/>
             <br>
             <br>Nuclear alignment file (tab delimited, pheno tile - insitu tile - x - y)
             <br><input type="file" id="AlignmentFile" onchange="LoadAlignmentFile();" />
             <br>
             <br>Scaling factor (in-situ pixel size / phenotype pixel size): <input id="scaling" value="3"/>
             <br>Maximum cell movement (in-situ pixels): <input id="maxdist" value="33"/>
-            <br>Start from phenotype tile: <input id="start_tile_p" value="0"/>
-            <br>Start from in-situ tile: <input id="start_tile_is" value="0"/>
             <br>Area gating (only pair nuclei with similar size): <input type="checkbox" id="area_gating" checked/>
             <br>
 
@@ -77,48 +75,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
     <script>
 
 
-        var align_x, align_y, align_tile, align_q;
+        /// GENERAL PUROPSE FUNCTIONS ///
 
-        var num_tiles1 = 0;
-        var num_tiles2 = 0;
-        var num_tiles3 = 0;
-
-
-        //LOAD STAGE POSITIONS:
-        var StagePositions1X = [], StagePositions1Y = [];
-        function LoadStageFile1()
-        {
-          var reader = new FileReader();
-          reader.onload = function(evt)
-          {
-            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
-            
-            for (var i=0; i<table.length-1; i++)
-            {
-              var line = table[i+1].split("\t");
-
-              StagePositions1X[i] = line[3+0]*1;
-              StagePositions1Y[i] = line[3+1]*1;
-            }
-
-            //normalize to stage steps (assuming a simple grid, starting left-to-right):
-            var StagePositionStep = StagePositions1X[1]-StagePositions1X[0];
-            var StagePositionX0 = StagePositions1X[0];
-            var StagePositionY0 = StagePositions1Y[0];
-            for (var i=0; i<table.length-1; i++)
-            {
-              StagePositions1X[i] = Math.round((StagePositions1X[i]-StagePositionX0)/StagePositionStep);
-              StagePositions1Y[i] = Math.round((StagePositions1Y[i]-StagePositionY0)/StagePositionStep);
-            }
-          };
-          reader.readAsText(document.getElementById("StageFile1").files[0]);
-        }
-
-
-
-
-
-        function UpdateCanvas()
+        function UpdateCanvas() //this callback function reads the GUI and updates the presented raw image
         {
           var cycle = document.getElementById("cycle").value*1;
           var tile = document.getElementById("tile").value*1;
@@ -128,7 +87,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         }
 
         var current_image_data;
-        function LoadImage(cycle, tile, channel, filter, callback)
+        function LoadImage(cycle, tile, channel, filter, callback) //this function loads a specific raw image
         {
           var brightness = document.getElementById("brightness").value*1;
           var scaling = document.getElementById("scaling").value*1;
@@ -137,9 +96,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
           var files;
           var image_id = tile*1;
-          var start = 256; //image_offsets1[image_id]; //VERY VERY VERY DIRTY
-          //var tile_p = tile, tile_is = tile;
-
 
           if (cycle==0) //pheno
           {
@@ -155,24 +111,23 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             files = document.getElementById("ImageFiles3").files;
           }
 
-
           var reader = new FileReader();
           reader.onload = function(evt)
           {
-            //decode TIF:
+            //decode TIFF:
             var ifds = UTIF.decode(reader.result);
             UTIF.decodeImage(reader.result, ifds[0]);
             var data = new Uint16Array(ifds[0].data);
             current_image_data = new Uint16Array(2048*2048);
             for (var i=0; i<2048*2048; i++) current_image_data[i] = data[i*2] + 256*data[i*2+1];
 
+            //get access to main canvas object:
             var canvas = document.getElementById("maincanvas");
-            //canvas.width = 1024;
-            //canvas.height = 1024;
             var ImageContext = canvas.getContext("2d");
             var ImageData = ImageContext.getImageData(0, 0, 2048, 2048);
             var ImageArray = new Uint8Array(ImageData.data.buffer);
 
+            //determine the max pixel intensity:
             var max = 0;
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
@@ -188,6 +143,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               	if (xx>=0 && xx<2048 && yy>=0 && yy<2048) if (current_image_data[x+y*2048] > max) max = current_image_data[xx+yy*2048];
             }
 
+            //scale image brightness to 0-255:
             for (var x=0; x<2048; x++) for (var y=0; y<2048; y++)
             {
                 var index = x+2048*y;
@@ -212,10 +168,12 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 ImageArray[4*index+3] = 255;
             }
 
+            //show spots on phenotype images as random-colored squares:
             if (showspots && cycle==0) //pheno
             {
               for (var i=0; i<p_cell_num; i++) if (p_cell_tile[i] == tile)
               {
+                //pick a random color:
               	var map = p_cell_map[i];
                 var r = (340850327*map)%255;
                 var g = (934895*map)%255;
@@ -245,10 +203,12 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
+            //show spots on NIS images as random-colored squares:
             if (showspots && cycle==1) //insitu
             {
               for (var i=0; i<i_cell_num; i++) if (i_cell_tile[i] == tile)
               {
+                //pick a random color:
                 var r = (340850327*i)%255;
                 var g = (934895*i)%255;
                 var b = (3538497218*i)%255;
@@ -271,6 +231,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
               }
             }
 
+            //show scaled image:
             ImageContext.putImageData(ImageData, 0, 0);
 
             if (callback) callback();
@@ -278,34 +239,58 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           reader.readAsArrayBuffer(files[image_id]);
         }
 
-
-
-
-
-
-        function LoadAlignmentFile()
+        var StagePositions1X = [], StagePositions1Y = [];
+        function LoadStageFile1() //this function loads the stage positions from a file
         {
           var reader = new FileReader();
           reader.onload = function(evt)
           {
             var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
-            var start_tile_p = document.getElementById("start_tile_p").value*1;
-            var start_tile_is = document.getElementById("start_tile_is").value*1;
+            
+            for (var i=0; i<table.length-1; i++)
+            {
+              var line = table[i+1].split("\t");
 
-            align_tile = new Int16Array(num_tiles1);
-            for (var i=0; i<num_tiles1; i++) align_tile[i] = -1;
-            align_x = new Int16Array(num_tiles1);
-            align_y = new Int16Array(num_tiles1);
-            align_q = new Int16Array(num_tiles1);
+              StagePositions1X[i] = line[3+0]*1;
+              StagePositions1Y[i] = line[3+1]*1;
+            }
+
+            //normalize to stage steps (assuming a simple grid, starting left-to-right):
+            var StagePositionStep = StagePositions1X[1]-StagePositions1X[0];
+            var StagePositionX0 = StagePositions1X[0];
+            var StagePositionY0 = StagePositions1Y[0];
+            for (var i=0; i<table.length-1; i++)
+            {
+              StagePositions1X[i] = Math.round((StagePositions1X[i]-StagePositionX0)/StagePositionStep);
+              StagePositions1Y[i] = Math.round((StagePositions1Y[i]-StagePositionY0)/StagePositionStep);
+            }
+          };
+          reader.readAsText(document.getElementById("StageFile1").files[0]);
+        }
+
+        var align_x, align_y, align_tile, align_q;
+        function LoadAlignmentFile() //this function loads the pixel offsets between phenotype and NIS images for each tile
+        {
+          var reader = new FileReader();
+          reader.onload = function(evt)
+          {
+            var table = reader.result.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+            var estimated_tile_num = table.length*2;
+
+            align_tile = new Int16Array(estimated_tile_num);
+            for (var i=0; i<estimated_tile_num; i++) align_tile[i] = -1;
+            align_x = new Int16Array(estimated_tile_num);
+            align_y = new Int16Array(estimated_tile_num);
+            align_q = new Int16Array(estimated_tile_num);
 
             for (var i=0; i<table.length; i++)
             {
               var line = table[i].split("\t");
 
-              var ii = line[0]*1 - start_tile_p;
-              if (ii >= 0)
+              var ii = line[0]*1;
+              if (ii >= 0 && ii < estimated_tile_num)
               {
-                align_tile[ii] = line[1]*1 - start_tile_is;
+                align_tile[ii] = line[1]*1;
                 align_x[ii] = line[2]*1;
                 align_y[ii] = line[3]*1;
                 align_q[ii] = line[4]*1;
@@ -315,9 +300,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           reader.readAsText(document.getElementById("AlignmentFile").files[0]);
         }
 
-
-
-        function SaveFile(data, filename)
+        function SaveFile(data, filename) //this function saves the content of data to a file
         {
             var bb = new Blob([data], {type: 'text/plain'});
             var a = document.createElement('a');
@@ -329,53 +312,16 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             a.click();
         }
 
-        function mouseDown(evt)
-        {
-            mouseDragging = true;
-
-            var svg = document.getElementById("maincanvas");
-            var box = svg.getBoundingClientRect();
-
-            mouseX = evt.clientX-box.left;
-            mouseY = evt.clientY-box.top;
-
-            var mindist, best=-1;
-            var tile_p = document.getElementById("tile").value*1;
-            var tile_is = align_tile[document.getElementById("tile").value*1];
-            for (var i=0; i<spot_num; i++) if (spot_tile[i] == tile_is)
-            {
-              var xx = Math.floor((mouseX/800*2048-1024)/3+align_x[tile_p]+1024);
-              var yy = Math.floor((mouseY/800*2048-1024)/3+align_y[tile_p]+1024);
-
-              var dx = spot_x[i] - xx;
-              var dy = spot_y[i] - yy;
-              var d = dx*dx + dy*dy;
-              if (best==-1 || d<mindist)
-              {
-                best = i;
-                mindist = d;
-              }
-            }
-            if (mindist < 100)
-            {
-              document.getElementById("current_seq").value = spot_seq[best];
-              //alert(highlighted_seq)
-              UpdateCanvas();
-            }
-            //alert(mouseX+" "+mouseY)
-
-            return false;
-        }
-        document.getElementById("maincanvas").addEventListener("mousedown", mouseDown, false);
 
 
 
 
 
+        /// NUCLEI MATCHING ///
 
         var current_cropping_cycle = 0, current_cropping_tile = 0;
         var total_aligned_cells, total_assigned_cells;
-        function StartCropping()
+        function StartCropping() //this function initiates a callback loop to assign nuclei in all masks
         {
           out = "";
           current_cropping_cycle = 0;
@@ -384,7 +330,8 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           total_assigned_cells = 0;
           LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
         }
-        function CroppingCallback()
+
+        function CroppingCallback() //this callback function loads the next mask, starts registering nuclei, or saves the final results
         {
           document.getElementById("status").innerHTML = " tile-"+current_cropping_tile;
 
@@ -405,7 +352,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
 
             current_cropping_tile++;
-            if (current_cropping_tile < num_tiles1) LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
+            if (current_cropping_tile < document.getElementById("ImageFiles1").files.length) LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
             else
             {
               current_cropping_cycle = 1;
@@ -431,7 +378,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
 
             current_cropping_tile++;
-            if (current_cropping_tile < num_tiles2) LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
+            if (current_cropping_tile < document.getElementById("ImageFiles2").files.length) LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
             else
             {
               current_cropping_cycle = 2;
@@ -451,7 +398,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
 
             current_cropping_tile++;
-            if (current_cropping_tile < num_tiles3) LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
+            if (current_cropping_tile < document.getElementById("ImageFiles3").files.length) LoadImage(current_cropping_cycle, current_cropping_tile, 0, 0, CroppingCallback);
             else
             {
               AssignCells();
@@ -459,12 +406,9 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
             }
           }
         }
-        
-
-
 
         var cell_num = 0, cell_x, cell_y, cell_n;
-        function DetectCells()
+        function DetectCells() //this function registers all nuclei from the currently loaded mask
         {
         	//find number of cells:
         	cell_num = 0;
@@ -509,7 +453,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
 
 
         var edge = 50; //less than overlap
-        function AssignCells()
+        function AssignCells() //this function assigns closest nuclei between NIS and phenotype masks
         {
         	var scaling = document.getElementById("scaling").value*1;
           var maxdist = document.getElementById("maxdist").value*1;
@@ -523,17 +467,16 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         		var x = p_cell_x[i];
         		var y = p_cell_y[i];
 
-            //transform pheno pos to mathed in-situ pos:
+            //transform phenotype position to matched NIS pos:
             var i_t = align_tile[p_cell_tile[i]];
             var i_x = (p_cell_x[i]-1024)/scaling+1024+align_x[p_cell_tile[i]];
             var i_y = (p_cell_y[i]-1024)/scaling+1024+align_y[p_cell_tile[i]];
-            //if (i_t == -1) alert("tile was not successfully aligned");
 
             //find best in-situ tile:
             if (use_overlapping_tiles && i_t != -1)
             {
               var best_i_t = -1, best_fromcenter, best_i_x, best_i_y;
-              for (var t=0; t<num_tiles2; t++)
+              for (var t=0; t<document.getElementById("ImageFiles2").files.length; t++)
               {
                 var d_xstep = StagePositions1X[t]-StagePositions1X[i_t];
                 var d_ystep = StagePositions1Y[t]-StagePositions1Y[i_t];
@@ -542,7 +485,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
                 {
                   var i_xx = i_x - d_xstep*px_per_step - d_ystep*py_per_step;
                   var i_yy = i_y - d_xstep*py_per_step + d_ystep*px_per_step;
-                  //to do: check correct orientation of y steps
 
                   var fromcenter = (i_xx-1024)**2 + (i_yy-1024)**2;
 
@@ -580,7 +522,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
         			}
         		}
         		p_cell_map[i] = min_cell;
-            //if (p_cell_tile[i] == 1) alert(x+" "+y+" "+i_t+" "+i_x+" "+i_y)
         	}
 
         	//remove pheno cells mapping to the same in-situ cell:
@@ -591,10 +532,10 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           //count success rate:
           var total_mapped = 0;
           for (var i=0; i<p_cell_num; i++) if (p_cell_map[i] != -1) total_mapped++;
-          alert(/*p_cell_num+" phenotype cells, "+i_cell_num+" in-situ cells, "+total_mapped+ */ "Mapped: "+Math.round(total_mapped/p_cell_num*100*10)/10+"%");
+          alert("Mapped: "+Math.round(total_mapped/p_cell_num*100*10)/10+"%");
         }
 
-        function SaveAssigments()
+        function SaveAssigments() //this function saves the assignment results to a file
         {
           var out = "in-situ_tile\tin-situ_nucleus\tin-situ_nucleus_x\tin-situ_nucleus_y\tin-situ_nucleus_area\tphenotype_tile\tphenotype_cell\tphenotype_nucleus_x\tphenotype_nucleus_y\tphenotype_nucleus_area";
           for (var i=0; i<p_cell_num; i++)
@@ -605,6 +546,7 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           SaveFile(out, "CellAssignments.txt");
 
           //mapping rate per tile:
+          var num_tiles1 = document.getElementById("ImageFiles1").files.length;
           var tile_n = new Uint32Array(num_tiles1);
           var tile_mapped = new Uint32Array(num_tiles1);
           for (var i=0; i<p_cell_num; i++)
@@ -616,5 +558,6 @@ Copyright 2020-2024 by Jonathan Schmid-Burgk
           for (var i=0; i<num_tiles1; i++) out += "\n"+tile_n[i]+"\t"+tile_mapped[i];
           SaveFile(out, "TileAssignmentStats.txt");
         }
+
 
     </script>
