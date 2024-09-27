@@ -1,0 +1,37 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "nisseq"
+version = "1.0.0"
+description = ""
+authors = ["Appsilon"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+# General dependencies
+pytest = "^8.1.0"  # For testing
+rich = "^13.0.0"  # Many ouputs are nicer if rich is installed
+ruff = "^0.3.6"  # For code styling and formatting
+pre-commit = "^3.7.0" # Pre-commit hooks for code styling and formatting
+pathlib = "^1.0.0" # For clean manipulation of paths
+typer = "^0.12.0" # For scripting
+pyyaml = "^6.0.0" # For config files
+
+## Data science
+pandas = "^2.2.0" # Pandas
+numpy = "^1.26.0" # Numpy 1
+pyarrow = "^16.0.0" # Pyarrow for parquet files
+umap-learn = "^0.5.0" # UMAP
+scikit-learn = "^1.4.0" # Scikit
+matplotlib = "^3.9.0" # Matplotlib
+
+## NNs
+torch = "^2.3.0" # pytorch
+torchvision = "^0.18.0" # augmentations
+timm = "^1.0.0" # timm - vision models
+
+## utils
+tqdm = "^4.66.0" # Progress bars

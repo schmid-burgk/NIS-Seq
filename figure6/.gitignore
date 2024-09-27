@@ -1,0 +1,14 @@
+.DS_Store
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.vscode/
+.idea/
+*.so
+data/
+viewer/images/*
+logs/
+nohup.out
+embeddings

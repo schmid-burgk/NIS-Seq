@@ -1,0 +1,20 @@
+data:
+  images_path: "data/nisseq/hela_data"
+  samples_df_path: "data/nisseq/nisseq.parquet"
+  stats_json_path: "data/nisseq/stats-nisseq.json"
+model:
+  pretrained: "swinv2_tiny_window16_256.ms_in1k"
+  use_channels: ['pro',]
+  internal_max_normalization: True
+embeddings: 
+  batch_size: 256
+  num_workers: 4
+  recompute: False
+  save_dir: "embeddings"
+clustering:
+  n_clusters: 200
+umap: 
+  recompute: False
+  save_file: umap.pkl
+  num_samples: 100000 # For faster computation
+  random_seed: null   # For parallel computation
