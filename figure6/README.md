@@ -1,4 +1,4 @@
-# prettyProteins
+# NIS-Seq, figure 6
 
 To reproduce or investigate results used to produce `figure6`, start by cloning this repo using SSH:
 ```
